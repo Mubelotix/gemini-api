@@ -27,6 +27,7 @@ cp -R "$EXT_DIR" "$BUILD_DIR/src"
 rm -f "$BUILD_DIR/src.crx"
 
 docker run --rm \
+  --user "$(id -u):$(id -g)" \
   -e PUID=$(id -u) \
   -e PGID=$(id -g) \
   -v "$BUILD_DIR:/work" \
@@ -55,9 +56,10 @@ docker run --rm \
   -e PUID=$(id -u) \
   -e PGID=$(id -g) \
   -e TZ=Etc/UTC \
-  -e CHROME_CLI="--enable-logging --v=1 --log-file=/config/chrome.log https://www.linuxserver.io/" \
+  -e CHROME_CLI="--enable-logging --v=1 --log-file=/config/chrome.log" \
   -p 3000:3000 \
   -p 3001:3001 \
+  --add-host=host.docker.internal:host-gateway \
   -v "$CONFIG_DIR:/config" \
   -v "$BUILD_DIR/$EXT_ID.json:/opt/google/chrome/extensions/$EXT_ID.json:ro" \
   --shm-size="1gb" \

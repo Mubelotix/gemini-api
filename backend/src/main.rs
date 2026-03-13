@@ -24,6 +24,7 @@ fn incoming_requests(ws: ws::WebSocket) -> ws::Stream!['static] {
 #[launch]
 fn rocket() -> _ {
     let figment = rocket::Config::figment()
+        .merge(Serialized::default("address", "0.0.0.0"))
         .merge(Serialized::default("port", 1111));
 
     rocket::custom(figment).mount("/", routes![index, incoming_requests])
