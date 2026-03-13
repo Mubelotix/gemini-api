@@ -1,1 +1,1 @@
-console.log('[extension@something] background loaded');
+console.log('[extension-something] background loaded');
