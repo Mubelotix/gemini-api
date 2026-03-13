@@ -37,7 +37,7 @@ docker run --rm \
     "$CHROME_BIN" --no-sandbox --pack-extension=/work/src --pack-extension-key=/work/extension.pem >/dev/null 2>&1
   '
 
-mv "$BUILD_DIR/src.crx" "$CRX_FILE"
+mv -f "$BUILD_DIR/src.crx" "$CRX_FILE"
 rm -rf "$BUILD_DIR/src"
 
 cat > "$BUILD_DIR/$EXT_ID.json" <<JSON
