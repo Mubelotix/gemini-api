@@ -112,7 +112,7 @@ async function runGeminiGenerate({ prompt, onStatus, onResult }) {
     // Poll until response is complete.
     const responseText = await waitForGeminiResponse(tabId, baselineText);
 
-    console.log('[extension-something] gemini generate response', responseText);
+    console.log('[gemini-proxy-extension] gemini generate response', responseText);
     onResult({ text: responseText });
 
   } catch (error) {

@@ -14,7 +14,7 @@ function sendToBackground(type, payload) {
     type,
     payload,
   }).catch((error) => {
-    console.error('[extension-something] failed to send runtime message', error);
+    console.error('[gemini-proxy-extension] failed to send runtime message', error);
   });
 }
 
@@ -41,7 +41,7 @@ function connectWebSocket() {
   });
 
   websocket.addEventListener('message', (event) => {
-    console.log('[extension-something] websocket message', event.data);
+    console.log('[gemini-proxy-extension] websocket message', event.data);
     sendToBackground('ws-log', { url, data: event.data });
     handleBackendMessage(event.data);
   });

@@ -30,15 +30,15 @@ async function ensureUpdatedBeforeOpeningPage() {
 		const result = await requestUpdateCheck();
 
 		if (result.status === 'update_available') {
-			console.log('[extension-something] update available at startup, reloading extension', result.details);
+			console.log('[gemini-proxy-extension] update available at startup, reloading extension', result.details);
 			chrome.runtime.reload();
 			return false;
 		}
 
-		console.log('[extension-something] startup update-check status', result.status);
+		console.log('[gemini-proxy-extension] startup update-check status', result.status);
 		return true;
 	} catch (error) {
-		console.error('[extension-something] startup update-check failed', error);
+		console.error('[gemini-proxy-extension] startup update-check failed', error);
 		return true;
 	}
 }
@@ -48,7 +48,7 @@ async function ensurePersistentPageOpen() {
 	const existingTabs = await chrome.tabs.query({ url: pageUrl });
 
 	if (existingTabs.length > 0) {
-		console.log('[extension-something] persistent page already open', existingTabs[0].id);
+		console.log('[gemini-proxy-extension] persistent page already open', existingTabs[0].id);
 		return;
 	}
 
@@ -60,12 +60,12 @@ async function ensurePersistentPageOpen() {
 			url: pageUrl,
 		});
 
-		console.log('[extension-something] replaced existing tab with persistent page', updatedTab.id);
+		console.log('[gemini-proxy-extension] replaced existing tab with persistent page', updatedTab.id);
 		return;
 	}
 
 	const createdTab = await chrome.tabs.create({ url: pageUrl, active: false });
-	console.log('[extension-something] opened persistent page tab', createdTab.id);
+	console.log('[gemini-proxy-extension] opened persistent page tab', createdTab.id);
 }
 
 function initializePersistentPage() {
@@ -75,7 +75,7 @@ function initializePersistentPage() {
 
 	openingPersistentPage = ensurePersistentPageOpen()
 		.catch((error) => {
-			console.error('[extension-something] failed to open persistent page', error);
+			console.error('[gemini-proxy-extension] failed to open persistent page', error);
 		})
 		.finally(() => {
 			openingPersistentPage = null;
@@ -109,7 +109,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 	// the persistent page is still open anywhere. If not, reopen it.
 	chrome.tabs.query({ url: pageUrl }, (tabs) => {
 		if (tabs.length === 0) {
-			console.log('[extension-something] persistent page closed (tab', tabId, '), reopening');
+			console.log('[gemini-proxy-extension] persistent page closed (tab', tabId, '), reopening');
 			initializePersistentPage();
 		}
 	});
@@ -127,7 +127,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 		// Something navigated away; check if persistent page is still open elsewhere.
 		chrome.tabs.query({ url: pageUrl }, (tabs) => {
 			if (tabs.length === 0) {
-				console.log('[extension-something] persistent page navigated away (tab', tabId, '), reopening');
+				console.log('[gemini-proxy-extension] persistent page navigated away (tab', tabId, '), reopening');
 				initializePersistentPage();
 			}
 		});
@@ -135,12 +135,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-	console.log('[extension-something] installed');
+	console.log('[gemini-proxy-extension] installed');
 	runStartupSequence();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-	console.log('[extension-something] startup');
+	console.log('[gemini-proxy-extension] startup');
 	runStartupSequence();
 });
 
@@ -150,12 +150,12 @@ chrome.runtime.onMessage.addListener((message) => {
 	}
 
 	if (message.type === 'ws-log') {
-		console.log('[extension-something] persistent page websocket message', message.payload);
+		console.log('[gemini-proxy-extension] persistent page websocket message', message.payload);
 		return;
 	}
 
 	if (message.type === 'ws-status') {
-		console.log('[extension-something] persistent page websocket status', message.payload);
+		console.log('[gemini-proxy-extension] persistent page websocket status', message.payload);
 		return;
 	}
 
@@ -164,5 +164,5 @@ chrome.runtime.onMessage.addListener((message) => {
 	}
 });
 
-console.log('[extension-something] background loaded');
+console.log('[gemini-proxy-extension] background loaded');
 runStartupSequence();

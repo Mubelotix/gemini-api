@@ -1,4 +1,4 @@
-console.log('[extension-something] content script injected on', window.location.href);
+console.log('[gemini-proxy-extension] content script injected on', window.location.href);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	if (!message) {

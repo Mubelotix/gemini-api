@@ -73,7 +73,7 @@ async function runGeminiLoginCheck({ onStatus, onResult }) {
       signInPresent: details.signInPresent,
     });
 
-    console.log('[extension-something] gemini document.innerText', details.innerText ?? '');
+    console.log('[gemini-proxy-extension] gemini document.innerText', details.innerText ?? '');
   } catch (error) {
     onStatus({
       state: 'gemini-check-error',

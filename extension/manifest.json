@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Extension Something",
+  "name": "Gemini Proxy Extension",
   "version": "1.0.0",
-  "description": "Dummy webextension that logs on every site.",
+  "description": "Gemini Proxy browser extension.",
   "permissions": ["tabs"],
   "background": {
     "service_worker": "background.js"
