@@ -43,6 +43,7 @@ function connectWebSocket() {
   websocket.addEventListener('message', (event) => {
     console.log('[extension-something] websocket message', event.data);
     sendToBackground('ws-log', { url, data: event.data });
+    handleBackendMessage(event.data);
   });
 
   websocket.addEventListener('error', () => {
@@ -61,6 +62,37 @@ function connectWebSocket() {
     websocket = null;
     scheduleReconnect();
   });
+}
+
+function handleBackendMessage(rawData) {
+  try {
+    const message = JSON.parse(rawData);
+    if (message?.type === 'check-gemini-login') {
+      if (typeof window.runGeminiLoginCheck !== 'function') {
+        sendToBackground('ws-status', {
+          state: 'gemini-check-error',
+          error: 'Gemini login checker is unavailable',
+        });
+        return;
+      }
+
+      window.runGeminiLoginCheck({
+        onStatus: (payload) => {
+          sendToBackground('ws-status', payload);
+        },
+        onResult: ({ signInPresent }) => {
+          if (websocket && websocket.readyState === WebSocket.OPEN) {
+            websocket.send(JSON.stringify({
+              type: 'gemini-login-status',
+              signInPresent,
+            }));
+          }
+        },
+      });
+    }
+  } catch {
+    // Ignore non-JSON websocket payloads.
+  }
 }
 
 window.addEventListener('load', () => {

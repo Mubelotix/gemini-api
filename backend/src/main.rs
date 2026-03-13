@@ -1,7 +1,12 @@
+mod api_tags;
+
 use rocket::figment::providers::Serialized;
-use rocket::tokio::time::{interval, Duration};
+use rocket::futures::{SinkExt, StreamExt};
+use rocket::tokio::sync::broadcast;
 
 #[macro_use] extern crate rocket;
+
+use api_tags::{handle_client_message, tags, ExtensionBridge};
 
 #[get("/")]
 fn index() -> &'static str {
@@ -9,23 +14,56 @@ fn index() -> &'static str {
 }
 
 #[get("/incoming-requests")]
-fn incoming_requests(ws: ws::WebSocket) -> ws::Stream!['static] {
-    ws::Stream! { ws =>
-        let _ = &ws;
-        let mut ticker = interval(Duration::from_secs(1));
+fn incoming_requests(ws: ws::WebSocket, bridge: &rocket::State<ExtensionBridge>) -> ws::Channel<'static> {
+    let bridge = bridge.inner().clone();
 
-        loop {
-            ticker.tick().await;
-            yield ws::Message::Text(r#"{"message":"hello world"}"#.to_string());
-        }
-    }
+    ws.channel(move |mut stream| {
+        Box::pin(async move {
+            let mut command_rx = bridge.command_tx.subscribe();
+
+            loop {
+                rocket::tokio::select! {
+                    incoming = stream.next() => {
+                        match incoming {
+                            Some(Ok(ws::Message::Text(text))) => {
+                                handle_client_message(&bridge, &text).await;
+                            }
+                            Some(Ok(_)) => {}
+                            Some(Err(_)) => break,
+                            None => break,
+                        }
+                    }
+                    outgoing = command_rx.recv() => {
+                        match outgoing {
+                            Ok(command) => {
+                                if let Ok(serialized) = serde_json::to_string(&command) {
+                                    if stream.send(ws::Message::Text(serialized)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    })
 }
 
 #[launch]
 fn rocket() -> _ {
+    let (command_tx, _) = broadcast::channel(32);
+    let bridge = ExtensionBridge::new(command_tx);
+
     let figment = rocket::Config::figment()
         .merge(Serialized::default("address", "0.0.0.0"))
         .merge(Serialized::default("port", 1111));
 
-    rocket::custom(figment).mount("/", routes![index, incoming_requests])
+    rocket::custom(figment)
+        .manage(bridge)
+        .mount("/", routes![index, incoming_requests, tags])
 }
