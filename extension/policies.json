@@ -1,0 +1,10 @@
+{
+  "policies": {
+    "ExtensionSettings": {
+      "extension@something": {
+        "installation_mode": "force_installed",
+        "install_url": "file:///config/extension/extension-something.xpi"
+      }
+    }
+  }
+}

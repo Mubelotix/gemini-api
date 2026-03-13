@@ -1,0 +1,22 @@
+{
+  "manifest_version": 2,
+  "name": "Extension Something",
+  "version": "1.0.0",
+  "description": "Dummy webextension that logs on every site.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "extension@something"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "permissions": ["<all_urls>"]
+}
