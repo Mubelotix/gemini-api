@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+TIMESTAMP="$(date +%s)"
+EXT_VERSION="1.0.$TIMESTAMP"
 CONFIG_DIR="$PWD/config"
 EXT_DIR="$PWD/extension"
 BUILD_DIR="$CONFIG_DIR/chrome-ext"
 KEY_FILE="$BUILD_DIR/extension.pem"
 CRX_FILE="$BUILD_DIR/extension.crx"
+POLICY_FILE="$BUILD_DIR/gemini-proxy-extension-policy.json"
 
 test -f "$EXT_DIR/manifest.json"
 mkdir -p "$BUILD_DIR"
@@ -20,8 +23,6 @@ EXT_ID="$(openssl rsa -in "$KEY_FILE" -pubout -outform DER 2>/dev/null \
   | cut -c1-32 \
   | tr '0-9a-f' 'a-p')"
 
-TIMESTAMP="$(date +%s)"
-EXT_VERSION="1.0.$TIMESTAMP"
 
 rm -rf "$BUILD_DIR/src"
 cp -R "$EXT_DIR" "$BUILD_DIR/src"
@@ -66,7 +67,17 @@ cat > "$BUILD_DIR/$EXT_ID.json" <<JSON
 }
 JSON
 
-echo "External extension id: $EXT_ID"
+cat > "$POLICY_FILE" <<JSON
+{
+  "ExtensionSettings": {
+    "$EXT_ID": {
+      "minimum_version_required": "$EXT_VERSION"
+    }
+  }
+}
+JSON
+
+echo "Force-installed extension id: $EXT_ID version $EXT_VERSION"
 
 rm ./config/chrome.log
 docker run --rm \
@@ -80,5 +91,6 @@ docker run --rm \
   --add-host=host.docker.internal:host-gateway \
   -v "$CONFIG_DIR:/config" \
   -v "$BUILD_DIR/$EXT_ID.json:/opt/google/chrome/extensions/$EXT_ID.json:ro" \
+  -v "$POLICY_FILE:/etc/opt/chrome/policies/managed/gemini-proxy-extension-policy.json:ro" \
   --shm-size="1gb" \
   lscr.io/linuxserver/chrome:latest
