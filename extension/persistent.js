@@ -90,6 +90,33 @@ function handleBackendMessage(rawData) {
         },
       });
     }
+
+    if (message?.type === 'gemini-generate') {
+      if (typeof window.runGeminiGenerate !== 'function') {
+        sendToBackground('ws-status', {
+          state: 'gemini-generate-error',
+          error: 'Gemini generate handler is unavailable',
+        });
+        return;
+      }
+
+      const prompt = message.prompt ?? '';
+      window.runGeminiGenerate({
+        prompt,
+        onStatus: (payload) => {
+          sendToBackground('ws-status', payload);
+        },
+        onResult: ({ text, error }) => {
+          if (websocket && websocket.readyState === WebSocket.OPEN) {
+            websocket.send(JSON.stringify({
+              type: 'gemini-generate-response',
+              text: text ?? '',
+              error: error ?? null,
+            }));
+          }
+        },
+      });
+    }
   } catch {
     // Ignore non-JSON websocket payloads.
   }

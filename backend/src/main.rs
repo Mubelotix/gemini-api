@@ -1,3 +1,4 @@
+mod api_generate;
 mod api_tags;
 
 use rocket::figment::providers::Serialized;
@@ -6,8 +7,8 @@ use rocket::tokio::sync::broadcast;
 
 #[macro_use] extern crate rocket;
 
+use api_generate::generate;
 use api_tags::{handle_client_message, tags, ExtensionBridge};
-
 #[get("/")]
 fn index() -> &'static str {
     "Hello, world!"
@@ -65,5 +66,5 @@ fn rocket() -> _ {
 
     rocket::custom(figment)
         .manage(bridge)
-        .mount("/", routes![index, incoming_requests, tags])
+        .mount("/", routes![index, incoming_requests, tags, generate])
 }
