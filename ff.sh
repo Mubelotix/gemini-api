@@ -20,11 +20,29 @@ EXT_ID="$(openssl rsa -in "$KEY_FILE" -pubout -outform DER 2>/dev/null \
   | cut -c1-32 \
   | tr '0-9a-f' 'a-p')"
 
-EXT_VERSION="$(grep -oP '"version"\s*:\s*"\K[^"]+' "$EXT_DIR/manifest.json")"
+TIMESTAMP="$(date +%s)"
+EXT_VERSION="1.0.$TIMESTAMP"
 
 rm -rf "$BUILD_DIR/src"
 cp -R "$EXT_DIR" "$BUILD_DIR/src"
 rm -f "$BUILD_DIR/src.crx"
+
+python3 - "$BUILD_DIR/src/manifest.json" "$EXT_VERSION" <<'PY'
+import json
+import sys
+
+manifest_path = sys.argv[1]
+version = sys.argv[2]
+
+with open(manifest_path, "r", encoding="utf-8") as f:
+    manifest = json.load(f)
+
+manifest["version"] = version
+
+with open(manifest_path, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2)
+    f.write("\n")
+PY
 
 docker run --rm \
   --user "$(id -u):$(id -g)" \

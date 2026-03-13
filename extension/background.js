@@ -1,6 +1,47 @@
 const PERSISTENT_PAGE_PATH = 'persistent.html';
 
 let openingPersistentPage = null;
+let startupSequence = null;
+
+function requestUpdateCheck() {
+	if (typeof chrome.runtime.requestUpdateCheck !== 'function') {
+		return Promise.resolve({ status: 'unavailable' });
+	}
+
+	return new Promise((resolve, reject) => {
+		try {
+			chrome.runtime.requestUpdateCheck((status, details) => {
+				const lastError = chrome.runtime.lastError;
+				if (lastError) {
+					reject(new Error(lastError.message));
+					return;
+				}
+
+				resolve({ status, details });
+			});
+		} catch (error) {
+			reject(error);
+		}
+	});
+}
+
+async function ensureUpdatedBeforeOpeningPage() {
+	try {
+		const result = await requestUpdateCheck();
+
+		if (result.status === 'update_available') {
+			console.log('[extension-something] update available at startup, reloading extension', result.details);
+			chrome.runtime.reload();
+			return false;
+		}
+
+		console.log('[extension-something] startup update-check status', result.status);
+		return true;
+	} catch (error) {
+		console.error('[extension-something] startup update-check failed', error);
+		return true;
+	}
+}
 
 async function ensurePersistentPageOpen() {
 	const pageUrl = chrome.runtime.getURL(PERSISTENT_PAGE_PATH);
@@ -43,14 +84,31 @@ function initializePersistentPage() {
 	return openingPersistentPage;
 }
 
+function runStartupSequence() {
+	if (startupSequence) {
+		return startupSequence;
+	}
+
+	startupSequence = (async () => {
+		const canProceed = await ensureUpdatedBeforeOpeningPage();
+		if (canProceed) {
+			await initializePersistentPage();
+		}
+	})().finally(() => {
+		startupSequence = null;
+	});
+
+	return startupSequence;
+}
+
 chrome.runtime.onInstalled.addListener(() => {
 	console.log('[extension-something] installed');
-	initializePersistentPage();
+	runStartupSequence();
 });
 
 chrome.runtime.onStartup.addListener(() => {
 	console.log('[extension-something] startup');
-	initializePersistentPage();
+	runStartupSequence();
 });
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -74,4 +132,4 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 console.log('[extension-something] background loaded');
-initializePersistentPage();
+runStartupSequence();
