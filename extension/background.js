@@ -101,6 +101,39 @@ function runStartupSequence() {
 	return startupSequence;
 }
 
+// Reopen the persistent page whenever it is closed.
+chrome.tabs.onRemoved.addListener((tabId) => {
+	const pageUrl = chrome.runtime.getURL(PERSISTENT_PAGE_PATH);
+
+	// We don't have the URL of the closed tab anymore, so we check whether
+	// the persistent page is still open anywhere. If not, reopen it.
+	chrome.tabs.query({ url: pageUrl }, (tabs) => {
+		if (tabs.length === 0) {
+			console.log('[extension-something] persistent page closed (tab', tabId, '), reopening');
+			initializePersistentPage();
+		}
+	});
+});
+
+// Reopen if the persistent page tab is navigated away from persistent.html.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+	if (!changeInfo.url) {
+		return;
+	}
+
+	const pageUrl = chrome.runtime.getURL(PERSISTENT_PAGE_PATH);
+
+	if (!changeInfo.url.startsWith(pageUrl)) {
+		// Something navigated away; check if persistent page is still open elsewhere.
+		chrome.tabs.query({ url: pageUrl }, (tabs) => {
+			if (tabs.length === 0) {
+				console.log('[extension-something] persistent page navigated away (tab', tabId, '), reopening');
+				initializePersistentPage();
+			}
+		});
+	}
+});
+
 chrome.runtime.onInstalled.addListener(() => {
 	console.log('[extension-something] installed');
 	runStartupSequence();
