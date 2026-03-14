@@ -131,18 +131,11 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
   try {
     onStatus({ state: 'gemini-generate-started' });
 
-    const tab = await chrome.tabs.create({
-      url: 'https://gemini.google.com/app',
-      active: false,
-    });
-
-    if (!tab.id) {
-      throw new Error('Gemini tab creation failed');
-    }
+    const tab = await window.createGeminiTab('https://gemini.google.com/app');
 
     tabId = tab.id;
 
-    // waitForTabLoad is defined in gemini_login_check.js (loaded before this script).
+    // waitForTabLoad is defined in gemini_tabs.js.
     await waitForTabLoad(tabId);
 
     // Extra delay for the Gemini SPA to finish rendering its editor.

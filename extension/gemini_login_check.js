@@ -1,33 +1,3 @@
-function waitForTabLoad(tabId, timeoutMs = 30000) {
-  return new Promise((resolve, reject) => {
-    let timeout = null;
-
-    const cleanup = () => {
-      if (timeout !== null) {
-        window.clearTimeout(timeout);
-      }
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-    };
-
-    const onUpdated = (updatedTabId, changeInfo) => {
-      if (updatedTabId !== tabId) {
-        return;
-      }
-
-      if (changeInfo.status === 'complete') {
-        cleanup();
-        resolve();
-      }
-    };
-
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    timeout = window.setTimeout(() => {
-      cleanup();
-      reject(new Error('Timed out waiting for Gemini tab load'));
-    }, timeoutMs);
-  });
-}
-
 function queryGeminiSignInDetails(tabId) {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, { type: 'check-gemini-signin-details' }, (response) => {
@@ -53,15 +23,7 @@ async function runGeminiLoginCheck({ onStatus, onResult }) {
   try {
     onStatus({ state: 'gemini-check-started' });
 
-    const tab = await chrome.tabs.create({
-      url: 'https://gemini.google.com/',
-      active: false,
-    });
-
-    if (!tab.id) {
-      throw new Error('Gemini tab creation failed');
-    }
-
+    const tab = await window.createGeminiTab('https://gemini.google.com/');
     tabId = tab.id;
     await waitForTabLoad(tabId);
 
