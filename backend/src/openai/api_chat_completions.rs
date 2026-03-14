@@ -981,16 +981,10 @@ fn sanitize_malformed_tool_arguments_json(text: &str) -> String {
         out.push('"');
 
         let mut after = end_index + 1;
-        while let Some(ch) = text[after..].chars().next() {
-            if ch.is_whitespace() {
-                after += ch.len_utf8();
-                continue;
-            }
-            break;
-        }
-
-        if text[after..].starts_with('"') {
-            after += 1;
+        if let Some(quote_rel) = text[after..].find('"') {
+            // Drop any malformed junk between the recovered JSON block and
+            // the terminating quote of the original arguments string.
+            after += quote_rel + 1;
         }
 
         cursor = after;
@@ -1441,5 +1435,30 @@ mod tests {
             parsed_arguments["filePath"],
             "/home/mubelotix/projects/gemini-ollama/backend/Cargo.toml"
         );
+    }
+
+    #[test]
+    fn parses_arguments_when_trailing_garbage_follows_embedded_json() {
+        let payload = r#"{"tool_calls":[{"type":"function","function":{"name":"manage_todo_list","arguments":"{"todoList":[{"id":1,"status":"completed","title":"Search for 'gemini-ollama' in codebase"}]} extraction"}}]}"#;
+
+        let calls = parse_tool_calls_from_text(payload, "seed").expect("expected tool calls");
+        assert_eq!(calls.len(), 1);
+
+        let function = calls[0]
+            .get("function")
+            .and_then(Value::as_object)
+            .expect("function object must be present");
+        assert_eq!(
+            function.get("name").and_then(Value::as_str),
+            Some("manage_todo_list")
+        );
+
+        let arguments = function
+            .get("arguments")
+            .and_then(Value::as_str)
+            .expect("arguments must be present");
+        let parsed_arguments: Value =
+            serde_json::from_str(arguments).expect("arguments should be valid JSON");
+        assert_eq!(parsed_arguments["todoList"][0]["id"], 1);
     }
 }
