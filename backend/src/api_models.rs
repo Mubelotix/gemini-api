@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::api_tags::{ExtensionBridge, request_gemini_sign_in_presence};
 use crate::error::AppResult;
+use crate::app_bail as bail;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TagsResponse {
@@ -164,7 +165,7 @@ pub async fn show_model(payload: Json<ShowRequest>) -> AppResult<Json<ShowRespon
 
     let entry = gemini_catalog_entry();
     if req.model != entry.tag.model && req.model != entry.tag.name {
-        return Err(anyhow::anyhow!("model not found").into());
+        bail!("model not found");
     }
 
     Ok(Json(ShowResponse {

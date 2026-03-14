@@ -7,6 +7,13 @@ use serde::Serialize;
 
 pub type AppResult<T> = Result<T, AppError>;
 
+#[macro_export]
+macro_rules! app_bail {
+    ($($arg:tt)*) => {
+        return Err(anyhow::Error::msg(format!($($arg)*)).into())
+    };
+}
+
 #[derive(Debug)]
 pub struct AppError(pub Error);
 
