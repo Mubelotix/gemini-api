@@ -12,6 +12,7 @@ mod extension_bridge;
 mod error;
 
 use rocket::figment::providers::Serialized;
+use rocket::data::{Limits, ToByteUnit};
 use rocket::futures::{SinkExt, StreamExt};
 use rocket::tokio::sync::broadcast;
 
@@ -79,7 +80,11 @@ fn rocket() -> _ {
 
     let figment = rocket::Config::figment()
         .merge(Serialized::default("address", "0.0.0.0"))
-        .merge(Serialized::default("port", 1111));
+        .merge(Serialized::default("port", 1111))
+        .merge(Serialized::default(
+            "limits",
+            Limits::new().limit("json", 64.mebibytes()),
+        ));
 
     rocket::custom(figment)
         .manage(bridge)
