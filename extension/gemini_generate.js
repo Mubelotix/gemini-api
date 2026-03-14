@@ -13,7 +13,9 @@ function sendTabMessage(tabId, message) {
 // Returns the new content (diff vs baseline).
 async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000) {
   const start = Date.now();
-  let seenTyping = false;
+  let lastText = baselineText;
+  let stableCount = 0;
+  const STABLE_TICKS_REQUIRED = 3;
 
   while (Date.now() - start < timeoutMs) {
     await new Promise((r) => window.setTimeout(r, 1000));
@@ -30,13 +32,26 @@ async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000) {
     const isTyping = /gemini is (thinking|typing)/i.test(currentText);
 
     if (isTyping) {
-      seenTyping = true;
+      // Still generating – reset stability counter.
+      stableCount = 0;
+      lastText = currentText;
+      continue;
     }
 
-    // Response is complete when we have seen the typing indicator and it is now gone,
-    // and the page has grown beyond the baseline.
-    if (seenTyping && !isTyping && currentText.length > baselineText.length) {
-      return extractNewContent(baselineText, currentText);
+    if (currentText.length > baselineText.length) {
+      if (currentText === lastText) {
+        stableCount++;
+      } else {
+        stableCount = 0;
+        lastText = currentText;
+      }
+
+      if (stableCount >= STABLE_TICKS_REQUIRED) {
+        return extractNewContent(baselineText, currentText);
+      }
+    } else {
+      stableCount = 0;
+      lastText = currentText;
     }
   }
 

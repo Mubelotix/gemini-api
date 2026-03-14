@@ -67,6 +67,16 @@ function connectWebSocket() {
 function handleBackendMessage(rawData) {
   try {
     const message = JSON.parse(rawData);
+    const requestId = message?.id;
+
+    if (typeof requestId !== 'number') {
+      sendToBackground('ws-status', {
+        state: 'backend-message-missing-id',
+        message,
+      });
+      return;
+    }
+
     if (message?.type === 'check-gemini-login') {
       if (typeof window.runGeminiLoginCheck !== 'function') {
         sendToBackground('ws-status', {
@@ -83,6 +93,7 @@ function handleBackendMessage(rawData) {
         onResult: ({ signInPresent }) => {
           if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send(JSON.stringify({
+              id: requestId,
               type: 'gemini-login-status',
               signInPresent,
             }));
@@ -109,6 +120,7 @@ function handleBackendMessage(rawData) {
         onResult: ({ text, error }) => {
           if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send(JSON.stringify({
+              id: requestId,
               type: 'gemini-generate-response',
               text: text ?? '',
               error: error ?? null,

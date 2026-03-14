@@ -55,7 +55,7 @@ pub async fn generate(payload: Json<GenerateRequest>, state: &State<ExtensionBri
     let prompt = req.prompt.clone().unwrap_or_default();
 
     let response = if req.model.starts_with("gemini") {
-        match request_gemini_generate(state.inner(), prompt).await {
+        match request_gemini_generate(state, prompt).await {
             Some(text) if !text.is_empty() => text,
             Some(_) => "Gemini returned an empty response.".to_string(),
             None => "Gemini is unavailable or the request timed out.".to_string(),

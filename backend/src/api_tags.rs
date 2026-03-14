@@ -1,63 +1,93 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rocket::get;
 use rocket::serde::json::Json;
 use rocket::tokio::sync::{broadcast, oneshot, Mutex};
 use rocket::tokio::time::{timeout, Duration};
 use rocket::State;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Clone)]
 pub struct ExtensionBridge {
-    pub command_tx: broadcast::Sender<ServerCommand>,
-    pub pending_login_check: Arc<Mutex<Option<oneshot::Sender<bool>>>>,
-    pub pending_generate: Arc<Mutex<Option<oneshot::Sender<String>>>>,
+    pub command_tx: broadcast::Sender<ExtensionCommand>,
+    pub receivers: Arc<Mutex<HashMap<usize, oneshot::Sender<Value>>>>,
+    pub counter: Arc<AtomicUsize>,
 }
 
 impl ExtensionBridge {
-    pub fn new(command_tx: broadcast::Sender<ServerCommand>) -> Self {
+    pub fn new(command_tx: broadcast::Sender<ExtensionCommand>) -> Self {
         Self {
             command_tx,
-            pending_login_check: Arc::new(Mutex::new(None)),
-            pending_generate: Arc::new(Mutex::new(None)),
+            receivers: Arc::new(Mutex::new(HashMap::new())),
+            counter: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ServerCommand {
-    #[serde(rename = "type")]
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum ExtensionCommandKind {
+    CheckGeminiLogin,
+    GeminiGenerate { prompt: String },
 }
 
-impl ServerCommand {
-    pub fn check_gemini_login() -> Self {
-        Self {
-            kind: "check-gemini-login".to_string(),
-            prompt: None,
-        }
-    }
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtensionCommand {
+    pub id: usize,
+    #[serde(flatten)]
+    pub kind: ExtensionCommandKind,
+}
 
-    pub fn gemini_generate(prompt: String) -> Self {
-        Self {
-            kind: "gemini-generate".to_string(),
-            prompt: Some(prompt),
+pub async fn send_command<R: DeserializeOwned>(state: &State<ExtensionBridge>, kind: ExtensionCommandKind) -> Result<R, String> {
+    let request_id = state.counter.fetch_add(1, Ordering::SeqCst);
+
+    let command = ExtensionCommand {
+        id: request_id,
+        kind,
+    };
+
+    let (tx, rx) = oneshot::channel();
+    state.receivers.lock().await.insert(request_id, tx);
+
+    state.command_tx.send(command).map_err(|e| format!("Failed to send command: {}", e))?;
+
+    match timeout(Duration::from_secs(120), rx).await {
+        Ok(Ok(response)) => serde_json::from_value(response).map_err(|e| format!("Failed to parse response: {}", e)),
+        Ok(Err(_)) => Err("Receiver dropped".to_string()),
+        Err(_) => {
+            state.receivers.lock().await.remove(&request_id);
+            Err("Command timed out".to_string())
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct ClientMessage {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    sign_in_present: Option<bool>,
+    id: usize,
+    #[serde(flatten)]
+    payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiLoginStatus {
     #[serde(default, rename = "signInPresent")]
-    sign_in_present_camel: Option<bool>,
+    sign_in_present: Option<bool>,
+}
+
+impl GeminiLoginStatus {
+    fn sign_in_present(&self) -> bool {
+        self.sign_in_present.unwrap_or(true)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiGenerateResult {
     #[serde(default)]
-    text: Option<String>,
+    text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,7 +116,7 @@ struct ModelDetails {
 
 #[get("/api/tags")]
 pub async fn tags(state: &State<ExtensionBridge>) -> Json<TagsResponse> {
-    let sign_in_present = request_gemini_sign_in_presence(state.inner()).await;
+    let sign_in_present = request_gemini_sign_in_presence(state).await;
     let gemini_available = matches!(sign_in_present, Some(false));
 
     let mut models = Vec::new();
@@ -97,35 +127,16 @@ pub async fn tags(state: &State<ExtensionBridge>) -> Json<TagsResponse> {
     Json(TagsResponse { models })
 }
 
-async fn request_gemini_sign_in_presence(state: &ExtensionBridge) -> Option<bool> {
+pub async fn request_gemini_sign_in_presence(state: &State<ExtensionBridge>) -> Option<bool> {
     if state.command_tx.receiver_count() == 0 {
         return None;
     }
 
-    let (tx, rx) = oneshot::channel();
-    {
-        let mut pending = state.pending_login_check.lock().await;
-        *pending = Some(tx);
-    }
+    let response: GeminiLoginStatus = send_command(state, ExtensionCommandKind::CheckGeminiLogin)
+        .await
+        .ok()?;
 
-    if state
-        .command_tx
-        .send(ServerCommand::check_gemini_login())
-        .is_err()
-    {
-        let mut pending = state.pending_login_check.lock().await;
-        *pending = None;
-        return None;
-    }
-
-    match timeout(Duration::from_secs(20), rx).await {
-        Ok(Ok(sign_in_present)) => Some(sign_in_present),
-        _ => {
-            let mut pending = state.pending_login_check.lock().await;
-            *pending = None;
-            None
-        }
-    }
+    Some(response.sign_in_present())
 }
 
 pub async fn handle_client_message(state: &ExtensionBridge, raw_message: &str) {
@@ -133,63 +144,26 @@ pub async fn handle_client_message(state: &ExtensionBridge, raw_message: &str) {
         return;
     };
 
-    match message.kind.as_str() {
-        "gemini-login-status" => {
-            let sign_in_present = message
-                .sign_in_present
-                .or(message.sign_in_present_camel)
-                .unwrap_or(true);
-            let sender = {
-                let mut pending = state.pending_login_check.lock().await;
-                pending.take()
-            };
-            if let Some(sender) = sender {
-                let _ = sender.send(sign_in_present);
-            }
-        }
-        "gemini-generate-response" => {
-            let text = message.text.unwrap_or_default();
-            let sender = {
-                let mut pending = state.pending_generate.lock().await;
-                pending.take()
-            };
-            if let Some(sender) = sender {
-                let _ = sender.send(text);
-            }
-        }
-        _ => {}
+    let sender = {
+        let mut receivers = state.receivers.lock().await;
+        receivers.remove(&message.id)
+    };
+
+    if let Some(sender) = sender {
+        let _ = sender.send(message.payload);
     }
 }
 
-pub async fn request_gemini_generate(state: &ExtensionBridge, prompt: String) -> Option<String> {
+pub async fn request_gemini_generate(state: &State<ExtensionBridge>, prompt: String) -> Option<String> {
     if state.command_tx.receiver_count() == 0 {
         return None;
     }
 
-    let (tx, rx) = oneshot::channel();
-    {
-        let mut pending = state.pending_generate.lock().await;
-        *pending = Some(tx);
-    }
+    let response: GeminiGenerateResult = send_command(state, ExtensionCommandKind::GeminiGenerate { prompt })
+        .await
+        .ok()?;
 
-    if state
-        .command_tx
-        .send(ServerCommand::gemini_generate(prompt))
-        .is_err()
-    {
-        let mut pending = state.pending_generate.lock().await;
-        *pending = None;
-        return None;
-    }
-
-    match timeout(Duration::from_secs(120), rx).await {
-        Ok(Ok(text)) => Some(text),
-        _ => {
-            let mut pending = state.pending_generate.lock().await;
-            *pending = None;
-            None
-        }
-    }
+    Some(response.text)
 }
 
 fn dummy_gemini_model() -> ModelEntry {
