@@ -613,10 +613,13 @@ fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
         format_tool_definitions(&behavior.available_tools)
     };
 
+    let valid_example = r#"{"tool_calls":[{"type":"function","function":{"name":"read_file","arguments":"{\"filePath\":\"/tmp/a.txt\",\"startLine\":1,\"endLine\":10}"}}]}"#;
+
     Some(format!(
-        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\nIf you call tools, respond with ONLY a valid JSON object in this exact shape:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": {{...}}}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
+        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\nIf you call tools, respond with ONLY one valid JSON object and nothing else (no markdown fences, no prose, no links, no trailing characters).\nRequired shape:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
         mode_line,
         forced_line,
+        valid_example,
         tools_list
     ))
 }
