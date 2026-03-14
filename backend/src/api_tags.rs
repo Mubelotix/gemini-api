@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use anyhow::{Context, Result as AnyResult, anyhow, bail};
 use rocket::get;
 use rocket::serde::json::Json;
 use rocket::tokio::spawn;
@@ -56,7 +57,15 @@ pub struct StreamingCommandItem<R> {
     pub done: bool,
 }
 
-pub async fn send_command<R: DeserializeOwned>(state: &State<ExtensionBridge>, kind: ExtensionCommandKind) -> Result<R, String> {
+fn ensure_extension_connected(state: &State<ExtensionBridge>) -> AnyResult<()> {
+    if state.command_tx.receiver_count() == 0 {
+        bail!("no extension websocket connected");
+    }
+
+    Ok(())
+}
+
+pub async fn send_command<R: DeserializeOwned>(state: &State<ExtensionBridge>, kind: ExtensionCommandKind) -> AnyResult<R> {
     let request_id = state.counter.fetch_add(1, Ordering::SeqCst);
 
     let command = ExtensionCommand {
@@ -67,19 +76,23 @@ pub async fn send_command<R: DeserializeOwned>(state: &State<ExtensionBridge>, k
     let (tx, mut rx) = channel(1);
     state.receivers.lock().await.insert(request_id, tx);
 
-    state.command_tx.send(command).map_err(|e| format!("Failed to send command: {}", e))?;
+    state
+        .command_tx
+        .send(command)
+        .context("failed to send command to extension")?;
 
     match timeout(Duration::from_secs(120), rx.recv()).await {
-        Ok(Some(response)) => serde_json::from_value(response.payload).map_err(|e| format!("Failed to parse response: {}", e)),
-        Ok(None) => Err("Receiver dropped".to_string()),
+        Ok(Some(response)) => serde_json::from_value(response.payload)
+            .context("failed to parse command response"),
+        Ok(None) => Err(anyhow!("response channel closed before receiving a value")),
         Err(_) => {
             state.receivers.lock().await.remove(&request_id);
-            Err("Command timed out".to_string())
+            Err(anyhow!("command timed out after 120s"))
         }
     }
 }
 
-pub async fn send_streaming_command<R: DeserializeOwned + Send + 'static>(state: &State<ExtensionBridge>, kind: ExtensionCommandKind) -> UnboundedReceiver<Result<StreamingCommandItem<R>, String>> {
+pub async fn send_streaming_command<R: DeserializeOwned + Send + 'static>(state: &State<ExtensionBridge>, kind: ExtensionCommandKind) -> UnboundedReceiver<AnyResult<StreamingCommandItem<R>>> {
     let request_id = state.counter.fetch_add(1, Ordering::SeqCst);
 
     let command = ExtensionCommand {
@@ -96,7 +109,7 @@ pub async fn send_streaming_command<R: DeserializeOwned + Send + 'static>(state:
     match state.command_tx.send(command) {
         Ok(_) => {}
         Err(e) => {
-            let _ = response_tx.send(Err(format!("Failed to send command: {}", e)));
+            let _ = response_tx.send(Err(anyhow!(e)).context("failed to send streaming command to extension"));
             state.receivers.lock().await.remove(&request_id);
             return response_rx;
         }
@@ -122,16 +135,16 @@ pub async fn send_streaming_command<R: DeserializeOwned + Send + 'static>(state:
                         }
                     }
                     Err(e) => {
-                        let _ = response_tx.send(Err(format!("Failed to parse response: {}", e)));
+                        let _ = response_tx.send(Err(anyhow!(e)).context("failed to parse streaming response"));
                         break;
                     }
                 },
                 Ok(None) => {
-                    let _ = response_tx.send(Err("Receiver dropped".to_string()));
+                    let _ = response_tx.send(Err(anyhow!("stream receiver dropped")));
                     break;
                 }
                 Err(_) => {
-                    let _ = response_tx.send(Err("Command timed out".to_string()));
+                    let _ = response_tx.send(Err(anyhow!("streaming command timed out after 120s")));
                     break;
                 }
             }
@@ -196,7 +209,7 @@ struct ModelDetails {
 
 #[get("/api/tags")]
 pub async fn tags(state: &State<ExtensionBridge>) -> Json<TagsResponse> {
-    let sign_in_present = request_gemini_sign_in_presence(state).await;
+    let sign_in_present = request_gemini_sign_in_presence(state).await.ok();
     let gemini_available = matches!(sign_in_present, Some(false));
 
     let mut models = Vec::new();
@@ -207,16 +220,14 @@ pub async fn tags(state: &State<ExtensionBridge>) -> Json<TagsResponse> {
     Json(TagsResponse { models })
 }
 
-pub async fn request_gemini_sign_in_presence(state: &State<ExtensionBridge>) -> Option<bool> {
-    if state.command_tx.receiver_count() == 0 {
-        return None;
-    }
+pub async fn request_gemini_sign_in_presence(state: &State<ExtensionBridge>) -> AnyResult<bool> {
+    ensure_extension_connected(state)?;
 
     let response: GeminiLoginStatus = send_command(state, ExtensionCommandKind::CheckGeminiLogin)
         .await
-        .ok()?;
+        .context("gemini login check failed")?;
 
-    Some(response.sign_in_present())
+    Ok(response.sign_in_present())
 }
 
 pub async fn handle_client_message(state: &ExtensionBridge, raw_message: &str) {
@@ -243,10 +254,8 @@ pub async fn handle_client_message(state: &ExtensionBridge, raw_message: &str) {
     }
 }
 
-pub async fn request_gemini_generate(state: &State<ExtensionBridge>, prompt: String) -> Option<String> {
-    if state.command_tx.receiver_count() == 0 {
-        return None;
-    }
+pub async fn request_gemini_generate(state: &State<ExtensionBridge>, prompt: String) -> AnyResult<String> {
+    ensure_extension_connected(state)?;
 
     let mut rx = send_streaming_command::<GeminiGenerateResult>(
         state,
@@ -264,11 +273,11 @@ pub async fn request_gemini_generate(state: &State<ExtensionBridge>, prompt: Str
                     break;
                 }
             }
-            Err(_) => return None,
+            Err(e) => return Err(e).context("gemini generate streaming failed"),
         }
     }
 
-    Some(output)
+    Ok(output)
 }
 
 fn dummy_gemini_model() -> ModelEntry {

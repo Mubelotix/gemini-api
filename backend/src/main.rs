@@ -1,5 +1,6 @@
 mod api_generate;
 mod api_tags;
+mod error;
 
 use rocket::figment::providers::Serialized;
 use rocket::futures::{SinkExt, StreamExt};

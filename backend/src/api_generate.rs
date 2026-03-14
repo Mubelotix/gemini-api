@@ -1,9 +1,11 @@
+use anyhow::Context;
 use rocket::post;
 use rocket::response::stream::TextStream;
 use rocket::State;
 use serde::{Deserialize, Serialize};
 
 use crate::api_tags::{ExtensionBridge, request_gemini_generate, send_streaming_command};
+use crate::error::AppResult;
 
 #[derive(Debug, Deserialize)]
 pub struct GenerateRequest {
@@ -58,7 +60,7 @@ pub struct GenerateStreamResponse {
 }
 
 #[post("/api/generate", format = "json", data = "<payload>")]
-pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state: &State<ExtensionBridge>) -> TextStream![String] {
+pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state: &State<ExtensionBridge>) -> AppResult<TextStream![String]> {
     let req = payload.into_inner();
     let model = req.model;
     let prompt = req.prompt.unwrap_or_default();
@@ -83,10 +85,13 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
         }
     } else {
         let response = if model.starts_with("gemini") {
-            match request_gemini_generate(state, prompt).await {
-                Some(text) if !text.is_empty() => text,
-                Some(_) => "Gemini returned an empty response.".to_string(),
-                None => "Gemini is unavailable or the request timed out.".to_string(),
+            let text = request_gemini_generate(state, prompt)
+                .await
+                .context("gemini non-stream generation failed")?;
+            if text.is_empty() {
+                "Gemini returned an empty response.".to_string()
+            } else {
+                text
             }
         } else {
             format!("Unsupported model: {}", model)
@@ -107,7 +112,7 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
         });
     }
 
-    TextStream! {
+    Ok(TextStream! {
         if stream_enabled {
             if stream_unsupported_model {
                 let chunk = GenerateStreamResponse {
@@ -163,5 +168,5 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
                 }
             }
         }
-    }
+    })
 }
