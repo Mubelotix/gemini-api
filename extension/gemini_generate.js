@@ -47,7 +47,7 @@ async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000) {
       }
 
       if (stableCount >= STABLE_TICKS_REQUIRED) {
-        return extractNewContent(baselineText, currentText);
+        return await extractResponseMarkdown(tabId, baselineText, currentText);
       }
     } else {
       stableCount = 0;
@@ -71,6 +71,18 @@ function extractNewContent(baseline, current) {
     i++;
   }
   return current.slice(i).trim();
+}
+
+// Extracts the final Gemini response as markdown via the content script.
+// Falls back to innerText diff on any error.
+async function extractResponseMarkdown(tabId, baselineText, currentText) {
+  try {
+    const result = await sendTabMessage(tabId, { type: 'gemini-get-response-markdown' });
+    if (result?.markdown) return result.markdown;
+  } catch {
+    // fall through
+  }
+  return extractNewContent(baselineText, currentText);
 }
 
 async function runGeminiGenerate({ prompt, onStatus, onResult }) {

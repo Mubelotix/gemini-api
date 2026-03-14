@@ -1,5 +1,69 @@
 console.log('[gemini-proxy-extension] content script injected on', window.location.href);
 
+// ---- Isolated Gemini response markdown extractor ----
+
+function domToMarkdown(node) {
+	if (node.nodeType === Node.TEXT_NODE) {
+		return node.textContent;
+	}
+	if (node.nodeType !== Node.ELEMENT_NODE) {
+		return '';
+	}
+
+	const tag = node.tagName.toLowerCase();
+	const childMd = () => Array.from(node.childNodes).map(domToMarkdown).join('');
+
+	switch (tag) {
+		case 'p':      return childMd().trim() + '\n\n';
+		case 'h1':     return '# '      + childMd().trim() + '\n\n';
+		case 'h2':     return '## '     + childMd().trim() + '\n\n';
+		case 'h3':     return '### '    + childMd().trim() + '\n\n';
+		case 'h4':     return '#### '   + childMd().trim() + '\n\n';
+		case 'h5':     return '##### '  + childMd().trim() + '\n\n';
+		case 'h6':     return '###### ' + childMd().trim() + '\n\n';
+		case 'strong':
+		case 'b':      return '**' + childMd() + '**';
+		case 'em':
+		case 'i':      return '*' + childMd() + '*';
+		case 'code':
+			if (node.closest('pre')) return node.textContent;
+			return '`' + node.textContent + '`';
+		case 'pre': {
+			const codeEl = node.querySelector('code');
+			const lang = codeEl?.className?.match(/language-(\w+)/)?.[1] ?? '';
+			return '```' + lang + '\n' + (codeEl ?? node).textContent + '\n```\n\n';
+		}
+		case 'ul':
+			return Array.from(node.children)
+				.filter(el => el.tagName.toLowerCase() === 'li')
+				.map(li => '- ' + domToMarkdown(li).trim())
+				.join('\n') + '\n\n';
+		case 'ol': {
+			const start = parseInt(node.getAttribute('start') ?? '1', 10);
+			return Array.from(node.children)
+				.filter(el => el.tagName.toLowerCase() === 'li')
+				.map((li, i) => `${start + i}. ` + domToMarkdown(li).trim())
+				.join('\n') + '\n\n';
+		}
+		case 'li':  return childMd();
+		case 'a':   return '[' + childMd() + '](' + (node.getAttribute('href') ?? '') + ')';
+		case 'hr':  return '\n---\n\n';
+		case 'br':  return '\n';
+		default:    return childMd();
+	}
+}
+
+function extractGeminiResponseMarkdown() {
+	const containers = document.querySelectorAll('structured-content-container');
+	if (!containers.length) throw new Error('No structured-content-container found');
+	const container = containers[containers.length - 1];
+	// Locate the rendered content div via its aria-live attribute (semantic, stable across updates).
+	const contentEl = container.querySelector('[aria-live]') ?? container;
+	return domToMarkdown(contentEl).trim();
+}
+
+// ---- End markdown extractor ----
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	if (!message) {
 		return;
@@ -57,6 +121,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 	if (message.type === 'gemini-get-innertext') {
 		sendResponse({ innerText: document.body?.innerText ?? '' });
+		return true;
+	}
+
+	if (message.type === 'gemini-get-response-markdown') {
+		try {
+			sendResponse({ markdown: extractGeminiResponseMarkdown() });
+		} catch (e) {
+			sendResponse({ markdown: null, error: String(e) });
+		}
 		return true;
 	}
 });
