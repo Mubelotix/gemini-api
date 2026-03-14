@@ -1,13 +1,9 @@
-const websocketUrls = [
-  'ws://host.docker.internal:1111/incoming-requests',
-  'ws://127.0.0.1:1111/incoming-requests',
-];
+const websocketUrl = 'ws://host.docker.internal:1111/incoming-requests';
 
 const reconnectDelayMs = 1000;
 const imagePreviewLifetimeMs = 5000;
 let websocket = null;
 let reconnectTimer = null;
-let nextUrlIndex = 0;
 
 function ensurePreviewContainer() {
   let container = document.getElementById('debug-image-previews');
@@ -171,8 +167,7 @@ function scheduleReconnect() {
 }
 
 function connectWebSocket() {
-  const url = websocketUrls[nextUrlIndex % websocketUrls.length];
-  nextUrlIndex += 1;
+  const url = websocketUrl;
 
   sendToBackground('ws-status', { state: 'connecting', url });
   websocket = new WebSocket(url);

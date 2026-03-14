@@ -16,12 +16,10 @@
   ],
   "host_permissions": [
     "<all_urls>",
-    "http://127.0.0.1:1111/*",
-    "ws://127.0.0.1:1111/*",
     "http://host.docker.internal:1111/*",
     "ws://host.docker.internal:1111/*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src ws://127.0.0.1:1111 ws://host.docker.internal:1111 http://127.0.0.1:1111 http://host.docker.internal:1111;"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src ws://host.docker.internal:1111 http://host.docker.internal:1111;"
   }
 }
