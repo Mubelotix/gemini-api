@@ -1,4 +1,6 @@
 mod api_generate;
+mod api_chat;
+mod api_common;
 mod api_delete;
 mod api_pull;
 mod api_push;
@@ -16,6 +18,7 @@ use rocket::tokio::sync::broadcast;
 #[macro_use] extern crate rocket;
 
 use api_generate::generate;
+use api_chat::chat;
 use api_delete::delete_model;
 use api_pull::pull_model;
 use api_push::push_model;
@@ -80,5 +83,5 @@ fn rocket() -> _ {
 
     rocket::custom(figment)
         .manage(bridge)
-        .mount("/", routes![index, incoming_requests, tags, running_models, show_model, generate, delete_model, pull_model, push_model, embed_model, copy_model, version])
+        .mount("/", routes![index, incoming_requests, tags, running_models, show_model, generate, chat, delete_model, pull_model, push_model, embed_model, copy_model, version])
 }
