@@ -5,7 +5,7 @@ use rocket::serde::json::Json;
 use rocket::State;
 use serde::{Deserialize, Serialize};
 
-use crate::api_common::GenerateCommandChunk;
+use crate::api_common::{GenerateCommandChunk, decode_image_to_file};
 use crate::error::AppResult;
 use crate::extension_bridge::{ExtensionBridge, ExtensionCommandKind, ExtensionFile, request_gemini_generate_with_files, send_streaming_command};
 
@@ -76,29 +76,6 @@ pub struct ChatResponseMessage {
     content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
-}
-
-fn decode_image_to_file(image: String) -> ExtensionFile {
-    if let Some(payload) = image.strip_prefix("data:")
-        && let Some((meta, bytes)) = payload.split_once(',')
-    {
-        let content_type = meta
-            .split(';')
-            .next()
-            .filter(|value| !value.is_empty())
-            .unwrap_or("image/png")
-            .to_string();
-
-        return ExtensionFile {
-            bytes: bytes.to_string(),
-            content_type,
-        };
-    }
-
-    ExtensionFile {
-        bytes: image,
-        content_type: "image/png".to_string(),
-    }
 }
 
 fn flatten_chat_prompt_and_files(messages: Vec<ChatMessageRequest>) -> (String, Vec<ExtensionFile>) {

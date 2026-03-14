@@ -4,8 +4,8 @@ use rocket::response::stream::TextStream;
 use rocket::State;
 use serde::{Deserialize, Serialize};
 
-use crate::api_common::GenerateCommandChunk;
-use crate::extension_bridge::{ExtensionBridge, ExtensionFile, request_gemini_generate_with_files, send_streaming_command};
+use crate::api_common::{GenerateCommandChunk, normalize_files};
+use crate::extension_bridge::{ExtensionBridge, request_gemini_generate_with_files, send_streaming_command};
 use crate::error::AppResult;
 
 #[derive(Debug, Deserialize)]
@@ -62,39 +62,6 @@ pub struct GenerateStreamResponse {
     done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-}
-
-fn decode_image_to_file(image: String) -> ExtensionFile {
-    if let Some(payload) = image.strip_prefix("data:")
-        && let Some((meta, bytes)) = payload.split_once(',')
-    {
-        let content_type = meta
-            .split(';')
-            .next()
-            .filter(|value| !value.is_empty())
-            .unwrap_or("image/png")
-            .to_string();
-
-        return ExtensionFile {
-            bytes: bytes.to_string(),
-            content_type,
-        };
-    }
-
-    ExtensionFile {
-        bytes: image,
-        content_type: "image/png".to_string(),
-    }
-}
-
-fn normalize_files(images: Option<Vec<String>>) -> Vec<ExtensionFile> {
-    let mut normalized = Vec::new();
-
-    if let Some(images) = images {
-        normalized.extend(images.into_iter().map(decode_image_to_file));
-    }
-
-    normalized
 }
 
 fn format_prompt(system: Option<String>, prompt: String) -> String {

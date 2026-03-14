@@ -20,6 +20,7 @@ use ollama::api_embed::embed_model;
 use ollama::api_copy::copy_model;
 use ollama::api_models::{running_models, show_model, tags};
 use ollama::api_version::version;
+use openai::api_chat_completions::{chat_completions, chat_completions_v1};
 use extension_bridge::{handle_client_message, ExtensionBridge};
 #[get("/")]
 fn index() -> &'static str {
@@ -81,5 +82,5 @@ fn rocket() -> _ {
 
     rocket::custom(figment)
         .manage(bridge)
-        .mount("/", routes![index, incoming_requests, tags, running_models, show_model, generate, chat, delete_model, pull_model, push_model, embed_model, copy_model, version])
+        .mount("/", routes![index, incoming_requests, tags, running_models, show_model, generate, chat, delete_model, pull_model, push_model, embed_model, copy_model, version, chat_completions, chat_completions_v1])
 }
