@@ -625,7 +625,7 @@ fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
 ```"#;
 
     Some(format!(
-        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\n{}\nIf you call tools, your output must be in this order only:\n1) Optional assistant text first.\n2) Exactly one fenced json code block containing \"tool_calls\" as the final output segment.\nDo not output assistant text after the tool-calls block.\nRequired shape inside the code block:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
+        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\n{}\nIf you call tools, your output must be in this order only:\n1) Optional assistant text first.\n2) Exactly one fenced json code block containing \"tool_calls\" as the final output segment.\nNever output a second tool-calls block.\nAfter the closing ``` fence of that json block, stop immediately. Any content after the closing fence is discarded.\nDo not output assistant text after the tool-calls block.\nRequired shape inside the code block:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
         mode_line,
         forced_line,
         stop_wait_line,
@@ -1243,7 +1243,7 @@ fn parse_tool_calls_from_text(text: &str, id_seed: &str) -> Option<Vec<Value>> {
 fn parse_tool_calls_and_content(text: &str, id_seed: &str) -> (Vec<Value>, Option<String>) {
     let blocks = extract_fenced_block_ranges(text);
 
-    if let Some((start, _end, content)) = blocks.last() {
+    for (start, _end, content) in &blocks {
         let san_content = sanitize_malformed_tool_arguments_json(content);
 
         for candidate in [san_content.as_str(), content.as_str()] {
@@ -1341,6 +1341,7 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
         } else {
             format!("Unsupported model: {}", model)
         };
+        eprintln!("[openai/chat_completions] non-stream model={} response={}", model, response_text);
 
         non_stream_body_opt = Some(if tool_mode_active {
             let (tool_calls, content) = parse_tool_calls_and_content(&response_text, &id);
@@ -1409,6 +1410,8 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
                             break;
                         }
                     }
+
+                    eprintln!("[openai/chat_completions] stream model={} aggregated_response={}", model, aggregated);
 
                     let (tool_calls, content_opt) = if !had_error {
                         parse_tool_calls_and_content(&aggregated, &id)
@@ -1486,6 +1489,7 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
                     return;
                 }
 
+                let mut aggregated = String::new();
                 while let Some(item) = stream_rx.recv().await {
                     let (text, done) = match item {
                         Ok(item) => {
@@ -1504,6 +1508,8 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
                         }
                         Err(error) => (format!("Gemini stream error: {}", error), true),
                     };
+
+                    aggregated.push_str(&text);
 
                     let chunk = build_stream_chunk(
                         id.clone(),
@@ -1524,6 +1530,8 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
                         break;
                     }
                 }
+
+                eprintln!("[openai/chat_completions] stream model={} aggregated_response={}", model, aggregated);
             }
 
             yield "data: [DONE]\n\n".to_string();
@@ -1776,19 +1784,19 @@ mod tests {
     }
 
     #[test]
-    fn keeps_only_last_tool_call_block_when_multiple_blocks_exist() {
+    fn keeps_only_first_tool_call_block_when_multiple_blocks_exist() {
         let text = "Starting search.\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\n\nAlso reading files:\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"filePath\\\":\\\"/tmp/a.txt\\\",\\\"startLine\\\":1,\\\"endLine\\\":10}\"}}]}\n```";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(
             tool_calls[0].get("function").and_then(Value::as_object).and_then(|f| f.get("name")).and_then(Value::as_str),
-            Some("read_file")
+            Some("grep_search")
         );
 
         let content = content.expect("content should be present");
         assert!(content.contains("Starting search"), "content should contain first text segment");
-        assert!(content.contains("Also reading files"), "content should include text before final tool block");
+        assert!(!content.contains("Also reading files"), "content should discard everything after first tool block");
     }
 
     #[test]
@@ -1805,6 +1813,22 @@ mod tests {
         let content = content.expect("content should be present");
         assert!(content.contains("Plan:"));
         assert!(!content.contains("Ignore this trailing output"));
+    }
+
+    #[test]
+    fn discards_trailing_fenced_block_after_tool_calls_json_block() {
+        let text = "Planning.\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\n\n```json\n{\"note\":\"this must be ignored\"}\n```";
+
+        let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(
+            tool_calls[0].get("function").and_then(Value::as_object).and_then(|f| f.get("name")).and_then(Value::as_str),
+            Some("grep_search")
+        );
+
+        let content = content.expect("content should be present");
+        assert!(content.contains("Planning."));
+        assert!(!content.contains("this must be ignored"));
     }
 
         #[test]
