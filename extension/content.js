@@ -269,7 +269,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	}
 
 	if (message.type === 'gemini-get-innertext') {
-		sendResponse({ innerText: document.body?.innerText ?? '' });
+		sendResponse({ innerText: document.documentElement?.innerText ?? document.body?.innerText ?? '' });
 		return true;
 	}
 

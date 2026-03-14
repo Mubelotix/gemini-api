@@ -16,10 +16,21 @@ async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000, on
   let lastText = baselineText;
   let lastEmittedResponse = '';
   let stableCount = 0;
-  const STABLE_TICKS_REQUIRED = 3;
+  const STABLE_TICKS_REQUIRED = 2;
+  const POLL_INTERVAL_MS = 1000;
+  let prevIsTyping = null;
+  let tick = 0;
+
+  console.log('[gemini-proxy-extension] waitForGeminiResponse:start', {
+    timeoutMs,
+    baselineLength: baselineText.length,
+    pollIntervalMs: POLL_INTERVAL_MS,
+    stableTicksRequired: STABLE_TICKS_REQUIRED,
+  });
 
   while (Date.now() - start < timeoutMs) {
-    await new Promise((r) => window.setTimeout(r, 1000));
+    await new Promise((r) => window.setTimeout(r, POLL_INTERVAL_MS));
+    tick += 1;
 
     let currentText;
     try {
@@ -46,7 +57,26 @@ async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000, on
       }
     }
 
+    // Gemini transient status is visible in page text; inspect full document innerText.
     const isTyping = /gemini is (thinking|typing)/i.test(currentText);
+
+    if (prevIsTyping !== isTyping) {
+      console.log('[gemini-proxy-extension] waitForGeminiResponse:typing-state-changed', {
+        elapsedMs: Date.now() - start,
+        isTyping,
+        currentLength: currentText.length,
+      });
+      prevIsTyping = isTyping;
+    }
+
+    if (tick % 10 === 0) {
+      console.log('[gemini-proxy-extension] waitForGeminiResponse:tick', {
+        elapsedMs: Date.now() - start,
+        isTyping,
+        stableCount,
+        currentLength: currentText.length,
+      });
+    }
 
     if (isTyping) {
       // Still generating – reset stability counter.
@@ -64,6 +94,11 @@ async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000, on
       }
 
       if (stableCount >= STABLE_TICKS_REQUIRED) {
+        console.log('[gemini-proxy-extension] waitForGeminiResponse:stable-complete', {
+          elapsedMs: Date.now() - start,
+          stableCount,
+          currentLength: currentText.length,
+        });
         return await extractResponseMarkdown(tabId, baselineText, currentText);
       }
     } else {
@@ -72,6 +107,11 @@ async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000, on
     }
   }
 
+  console.log('[gemini-proxy-extension] waitForGeminiResponse:timeout', {
+    elapsedMs: Date.now() - start,
+    timeoutMs,
+    stableCount,
+  });
   throw new Error('Timed out waiting for Gemini response');
 }
 
