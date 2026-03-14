@@ -1,5 +1,6 @@
 mod api_generate;
 mod api_delete;
+mod api_pull;
 mod api_tags;
 mod error;
 
@@ -11,6 +12,7 @@ use rocket::tokio::sync::broadcast;
 
 use api_generate::generate;
 use api_delete::delete_model;
+use api_pull::pull_model;
 use api_tags::{handle_client_message, tags, ExtensionBridge};
 #[get("/")]
 fn index() -> &'static str {
@@ -68,5 +70,5 @@ fn rocket() -> _ {
 
     rocket::custom(figment)
         .manage(bridge)
-        .mount("/", routes![index, incoming_requests, tags, generate, delete_model])
+        .mount("/", routes![index, incoming_requests, tags, generate, delete_model, pull_model])
 }
