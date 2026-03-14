@@ -96,6 +96,7 @@ function handleBackendMessage(rawData) {
               id: requestId,
               type: 'gemini-login-status',
               signInPresent,
+              done: true,
             }));
           }
         },
@@ -112,18 +113,43 @@ function handleBackendMessage(rawData) {
       }
 
       const prompt = message.prompt ?? '';
+      let streamedText = '';
       window.runGeminiGenerate({
         prompt,
         onStatus: (payload) => {
           sendToBackground('ws-status', payload);
         },
-        onResult: ({ text, error }) => {
+        onChunk: (text) => {
+          const chunk = String(text ?? '');
+          if (chunk.length === 0) {
+            return;
+          }
+
+          streamedText += chunk;
+
           if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send(JSON.stringify({
               id: requestId,
               type: 'gemini-generate-response',
-              text: text ?? '',
+              text: chunk,
+              error: null,
+              done: false,
+            }));
+          }
+        },
+        onResult: ({ text, error }) => {
+          const finalText = String(text ?? '');
+          const tail = finalText.startsWith(streamedText)
+            ? finalText.slice(streamedText.length)
+            : finalText;
+
+          if (websocket && websocket.readyState === WebSocket.OPEN) {
+            websocket.send(JSON.stringify({
+              id: requestId,
+              type: 'gemini-generate-response',
+              text: tail,
               error: error ?? null,
+              done: true,
             }));
           }
         },

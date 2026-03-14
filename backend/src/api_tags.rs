@@ -4,17 +4,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rocket::get;
 use rocket::serde::json::Json;
-use rocket::tokio::sync::{broadcast, oneshot, Mutex};
+use rocket::tokio::spawn;
+use rocket::tokio::sync::mpsc::{Sender, UnboundedReceiver, channel, unbounded_channel};
+use rocket::tokio::sync::{Mutex, broadcast};
 use rocket::tokio::time::{timeout, Duration};
 use rocket::State;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Debug)]
+pub(crate) struct BridgeMessage {
+    done: bool,
+    payload: Value,
+}
+
 #[derive(Clone)]
 pub struct ExtensionBridge {
     pub command_tx: broadcast::Sender<ExtensionCommand>,
-    pub receivers: Arc<Mutex<HashMap<usize, oneshot::Sender<Value>>>>,
+    pub receivers: Arc<Mutex<HashMap<usize, Sender<BridgeMessage>>>>,
     pub counter: Arc<AtomicUsize>,
 }
 
@@ -42,6 +50,12 @@ pub struct ExtensionCommand {
     pub kind: ExtensionCommandKind,
 }
 
+#[derive(Debug)]
+pub struct StreamingCommandItem<R> {
+    pub value: R,
+    pub done: bool,
+}
+
 pub async fn send_command<R: DeserializeOwned>(state: &State<ExtensionBridge>, kind: ExtensionCommandKind) -> Result<R, String> {
     let request_id = state.counter.fetch_add(1, Ordering::SeqCst);
 
@@ -50,14 +64,14 @@ pub async fn send_command<R: DeserializeOwned>(state: &State<ExtensionBridge>, k
         kind,
     };
 
-    let (tx, rx) = oneshot::channel();
+    let (tx, mut rx) = channel(1);
     state.receivers.lock().await.insert(request_id, tx);
 
     state.command_tx.send(command).map_err(|e| format!("Failed to send command: {}", e))?;
 
-    match timeout(Duration::from_secs(120), rx).await {
-        Ok(Ok(response)) => serde_json::from_value(response).map_err(|e| format!("Failed to parse response: {}", e)),
-        Ok(Err(_)) => Err("Receiver dropped".to_string()),
+    match timeout(Duration::from_secs(120), rx.recv()).await {
+        Ok(Some(response)) => serde_json::from_value(response.payload).map_err(|e| format!("Failed to parse response: {}", e)),
+        Ok(None) => Err("Receiver dropped".to_string()),
         Err(_) => {
             state.receivers.lock().await.remove(&request_id);
             Err("Command timed out".to_string())
@@ -65,9 +79,75 @@ pub async fn send_command<R: DeserializeOwned>(state: &State<ExtensionBridge>, k
     }
 }
 
+pub async fn send_streaming_command<R: DeserializeOwned + Send + 'static>(state: &State<ExtensionBridge>, kind: ExtensionCommandKind) -> UnboundedReceiver<Result<StreamingCommandItem<R>, String>> {
+    let request_id = state.counter.fetch_add(1, Ordering::SeqCst);
+
+    let command = ExtensionCommand {
+        id: request_id,
+        kind,
+    };
+
+    let (tx, mut rx) = channel(10);
+    state.receivers.lock().await.insert(request_id, tx);
+
+    let (response_tx, response_rx) = unbounded_channel();
+    let receivers = state.receivers.clone();
+
+    match state.command_tx.send(command) {
+        Ok(_) => {}
+        Err(e) => {
+            let _ = response_tx.send(Err(format!("Failed to send command: {}", e)));
+            state.receivers.lock().await.remove(&request_id);
+            return response_rx;
+        }
+    }
+
+    spawn(async move {
+        loop {
+            match timeout(Duration::from_secs(120), rx.recv()).await {
+                Ok(Some(response)) => match serde_json::from_value(response.payload) {
+                    Ok(parsed) => {
+                        let done = response.done;
+                        if response_tx
+                            .send(Ok(StreamingCommandItem {
+                                value: parsed,
+                                done,
+                            }))
+                            .is_err()
+                        {
+                            break;
+                        }
+                        if done {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(Err(format!("Failed to parse response: {}", e)));
+                        break;
+                    }
+                },
+                Ok(None) => {
+                    let _ = response_tx.send(Err("Receiver dropped".to_string()));
+                    break;
+                }
+                Err(_) => {
+                    let _ = response_tx.send(Err("Command timed out".to_string()));
+                    break;
+                }
+            }
+        }
+
+        receivers.lock().await.remove(&request_id);
+    });
+
+    response_rx
+}
+
 #[derive(Debug, Deserialize)]
 struct ClientMessage {
     id: usize,
+    #[serde(default)]
+    done: bool,
     #[serde(flatten)]
     payload: Value,
 }
@@ -143,14 +223,23 @@ pub async fn handle_client_message(state: &ExtensionBridge, raw_message: &str) {
     let Ok(message) = serde_json::from_str::<ClientMessage>(raw_message) else {
         return;
     };
-
+    
     let sender = {
         let mut receivers = state.receivers.lock().await;
-        receivers.remove(&message.id)
+        if message.done {
+            receivers.remove(&message.id)
+        } else {
+            receivers.get(&message.id).cloned()
+        }
     };
 
     if let Some(sender) = sender {
-        let _ = sender.send(message.payload);
+        let _ = sender
+            .send(BridgeMessage {
+                done: message.done,
+                payload: message.payload,
+            })
+            .await;
     }
 }
 
@@ -159,11 +248,27 @@ pub async fn request_gemini_generate(state: &State<ExtensionBridge>, prompt: Str
         return None;
     }
 
-    let response: GeminiGenerateResult = send_command(state, ExtensionCommandKind::GeminiGenerate { prompt })
-        .await
-        .ok()?;
+    let mut rx = send_streaming_command::<GeminiGenerateResult>(
+        state,
+        ExtensionCommandKind::GeminiGenerate { prompt },
+    )
+    .await;
 
-    Some(response.text)
+    let mut output = String::new();
+
+    while let Some(item) = rx.recv().await {
+        match item {
+            Ok(item) => {
+                output.push_str(&item.value.text);
+                if item.done {
+                    break;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+
+    Some(output)
 }
 
 fn dummy_gemini_model() -> ModelEntry {

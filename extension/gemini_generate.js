@@ -11,9 +11,10 @@ function sendTabMessage(tabId, message) {
 
 // Polls the tab innerText every second, waiting until Gemini finishes responding.
 // Returns the new content (diff vs baseline).
-async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000) {
+async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000, onChunk) {
   const start = Date.now();
   let lastText = baselineText;
+  let lastEmittedResponse = '';
   let stableCount = 0;
   const STABLE_TICKS_REQUIRED = 3;
 
@@ -27,6 +28,22 @@ async function waitForGeminiResponse(tabId, baselineText, timeoutMs = 120000) {
     } catch {
       // Tab may not be ready yet; keep polling.
       continue;
+    }
+
+    const currentResponse = await tryExtractResponseMarkdown(tabId);
+    if (typeof onChunk === 'function' && currentResponse && currentResponse !== lastEmittedResponse) {
+      if (currentResponse.startsWith(lastEmittedResponse)) {
+        const delta = currentResponse.slice(lastEmittedResponse.length);
+        if (delta.length > 0) {
+          onChunk(delta);
+        }
+        lastEmittedResponse = currentResponse;
+      } else if (lastEmittedResponse.startsWith(currentResponse)) {
+        // UI re-rendered to a shorter intermediate representation; don't emit.
+      } else {
+        // Non-monotonic rewrite (formatting/layout churn). Skip incremental emit.
+        // Final fallback (onResult) will still return the complete response.
+      }
     }
 
     const isTyping = /gemini is (thinking|typing)/i.test(currentText);
@@ -75,17 +92,25 @@ function extractNewContent(baseline, current) {
 
 // Extracts the final Gemini response as markdown via the content script.
 // Falls back to innerText diff on any error.
-async function extractResponseMarkdown(tabId, baselineText, currentText) {
+async function tryExtractResponseMarkdown(tabId) {
   try {
     const result = await sendTabMessage(tabId, { type: 'gemini-get-response-markdown' });
     if (result?.markdown) return result.markdown;
   } catch {
     // fall through
   }
+  return null;
+}
+
+async function extractResponseMarkdown(tabId, baselineText, currentText) {
+  const markdown = await tryExtractResponseMarkdown(tabId);
+  if (markdown) {
+    return markdown;
+  }
   return extractNewContent(baselineText, currentText);
 }
 
-async function runGeminiGenerate({ prompt, onStatus, onResult }) {
+async function runGeminiGenerate({ prompt, onStatus, onChunk, onResult }) {
   let tabId = null;
 
   try {
@@ -137,7 +162,7 @@ async function runGeminiGenerate({ prompt, onStatus, onResult }) {
     onStatus({ state: 'gemini-generate-sent' });
 
     // Poll until response is complete.
-    const responseText = await waitForGeminiResponse(tabId, baselineText);
+    const responseText = await waitForGeminiResponse(tabId, baselineText, 120000, onChunk);
 
     console.log('[gemini-proxy-extension] gemini generate response', responseText);
     onResult({ text: responseText });
