@@ -613,10 +613,12 @@ fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
         format_tool_definitions(&behavior.available_tools)
     };
 
-    let valid_example = r#"{"tool_calls":[{"type":"function","function":{"name":"read_file","arguments":"{\"filePath\":\"/tmp/a.txt\",\"startLine\":1,\"endLine\":10}"}}]}"#;
+    let valid_example = r#"```json
+{"tool_calls":[{"type":"function","function":{"name":"read_file","arguments":"{\"filePath\":\"/tmp/a.txt\",\"startLine\":1,\"endLine\":10}"}}]}
+```"#;
 
     Some(format!(
-        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\nIf you call tools, respond with ONLY one valid JSON object and nothing else (no markdown fences, no prose, no links, no trailing characters).\nRequired shape:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
+        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\nIf you call tools, respond with ONLY one fenced json code block and nothing else (no prose, no links, no trailing characters).\nRequired shape inside the code block:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
         mode_line,
         forced_line,
         valid_example,
@@ -845,13 +847,75 @@ fn extract_json_candidate_from_text(text: &str) -> Option<&str> {
 
     let fence_start = trimmed.find("```")?;
     let after_fence = &trimmed[fence_start + 3..];
-    let body_start = if let Some(newline_index) = after_fence.find('\n') {
-        &after_fence[newline_index + 1..]
+    let body_start = if after_fence.starts_with('\n') || after_fence.starts_with("\r\n") {
+        after_fence.trim_start_matches(['\r', '\n'])
+    } else if after_fence.starts_with('{') || after_fence.starts_with('[') {
+        after_fence
+    } else if let Some(newline_index) = after_fence.find('\n') {
+        let first_line = after_fence[..newline_index].trim();
+        let looks_like_language_tag = !first_line.is_empty()
+            && first_line
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+
+        if looks_like_language_tag {
+            &after_fence[newline_index + 1..]
+        } else {
+            after_fence
+        }
     } else {
         after_fence
     };
     let fence_end = body_start.find("```")?;
     Some(body_start[..fence_end].trim())
+}
+
+fn extract_all_fenced_candidates(text: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(start_rel) = text[cursor..].find("```") {
+        let fence_start = cursor + start_rel;
+        let after_fence_start = fence_start + 3;
+        if after_fence_start >= text.len() {
+            break;
+        }
+
+        let after_fence = &text[after_fence_start..];
+        let body_start = if after_fence.starts_with('\n') || after_fence.starts_with("\r\n") {
+            after_fence.trim_start_matches(['\r', '\n'])
+        } else if after_fence.starts_with('{') || after_fence.starts_with('[') {
+            after_fence
+        } else if let Some(newline_index) = after_fence.find('\n') {
+            let first_line = after_fence[..newline_index].trim();
+            let looks_like_language_tag = !first_line.is_empty()
+                && first_line
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+
+            if looks_like_language_tag {
+                &after_fence[newline_index + 1..]
+            } else {
+                after_fence
+            }
+        } else {
+            after_fence
+        };
+
+        let Some(fence_end_rel) = body_start.find("```") else {
+            break;
+        };
+        let candidate = body_start[..fence_end_rel].trim();
+        if !candidate.is_empty() {
+            candidates.push(candidate.to_string());
+        }
+
+        // Move cursor past this closing fence to continue scanning subsequent fenced blocks.
+        let consumed = body_start.as_ptr() as usize - text.as_ptr() as usize + fence_end_rel + 3;
+        cursor = consumed.min(text.len());
+    }
+
+    candidates
 }
 
 fn find_matching_delimiter(text: &str, start: usize, open: char, close: char) -> Option<usize> {
@@ -1065,28 +1129,59 @@ fn repair_incomplete_json(text: &str) -> String {
 
 fn parse_tool_calls_from_text(text: &str, id_seed: &str) -> Option<Vec<Value>> {
     let sanitized = sanitize_malformed_tool_arguments_json(text);
-    let candidate = extract_json_candidate_from_text(&sanitized)?;
-    let repaired = repair_incomplete_json(candidate);
-    let parsed: Value = serde_json::from_str(&repaired).ok()?;
+    let mut candidates = Vec::new();
 
-    let tool_calls = if let Some(tool_calls_array) = parsed
-        .as_object()
-        .and_then(|obj| obj.get("tool_calls"))
-        .and_then(Value::as_array)
-    {
-        tool_calls_array.clone()
-    } else if let Some(array) = parsed.as_array() {
-        array.clone()
-    } else {
-        return None;
-    };
+    for source in [sanitized.as_str(), text] {
+        let trimmed = source.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
 
-    let normalized = normalize_tool_calls(&tool_calls, id_seed);
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
+        if let Some(candidate) = extract_json_candidate_from_text(source) {
+            candidates.push(candidate.to_string());
+        }
+        candidates.extend(extract_all_fenced_candidates(source));
+        candidates.push(trimmed.to_string());
+
+        if let Some(index) = trimmed.find('{') {
+            candidates.push(trimmed[index..].to_string());
+        }
+        if let Some(index) = trimmed.find('[') {
+            candidates.push(trimmed[index..].to_string());
+        }
     }
+
+    for candidate in candidates {
+        let repaired = repair_incomplete_json(&candidate);
+        let parsed = if let Ok(parsed) = serde_json::from_str::<Value>(&repaired) {
+            parsed
+        } else {
+            let mut deserializer = serde_json::Deserializer::from_str(&repaired);
+            let Ok(parsed) = Value::deserialize(&mut deserializer) else {
+                continue;
+            };
+            parsed
+        };
+
+        let tool_calls = if let Some(tool_calls_array) = parsed
+            .as_object()
+            .and_then(|obj| obj.get("tool_calls"))
+            .and_then(Value::as_array)
+        {
+            tool_calls_array.clone()
+        } else if let Some(array) = parsed.as_array() {
+            array.clone()
+        } else {
+            continue;
+        };
+
+        let normalized = normalize_tool_calls(&tool_calls, id_seed);
+        if !normalized.is_empty() {
+            return Some(normalized);
+        }
+    }
+
+    None
 }
 
 fn select_effective_tools_for_prompt(behavior: &ToolBehavior) -> Vec<Value> {
@@ -1461,4 +1556,121 @@ mod tests {
             serde_json::from_str(arguments).expect("arguments should be valid JSON");
         assert_eq!(parsed_arguments["todoList"][0]["id"], 1);
     }
+
+        #[test]
+        fn parses_tool_calls_from_json_prefix_with_fenced_block() {
+                let payload = r#"JSON```
+{
+    "tool_calls": [
+        {
+            "type": "function",
+            "function": {
+                "name": "manage_todo_list",
+                "arguments": "{\"todoList\":[{\"id\":1,\"status\":\"in-progress\",\"title\":\"Search for 'gemini-ollama' in the workspace\"}]}"
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "grep_search",
+                "arguments": "{\"isRegexp\":false,\"query\":\"gemini-ollama\"}"
+            }
+        }
+    ]
+}
+
+```"#;
+
+                let calls = parse_tool_calls_from_text(payload, "seed").expect("expected tool calls");
+                assert_eq!(calls.len(), 2);
+
+                let first_name = calls[0]
+                        .get("function")
+                        .and_then(Value::as_object)
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        .expect("first tool name should be present");
+                assert_eq!(first_name, "manage_todo_list");
+
+                let second_name = calls[1]
+                        .get("function")
+                        .and_then(Value::as_object)
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        .expect("second tool name should be present");
+                assert_eq!(second_name, "grep_search");
+        }
+
+            #[test]
+            fn parses_tool_calls_from_json_prefix_with_single_line_json_block() {
+                let payload = r#"JSON```
+        {"tool_calls":[{"type":"function","function":{"name":"manage_todo_list","arguments":"{\"todoList\":[{\"id\":1,\"status\":\"in-progress\",\"title\":\"Search for 'gemini-ollama' in codebase\"},{\"id\":2,\"status\":\"not-started\",\"title\":\"Rename 'gemini-ollama' to 'gemini-proxy' in files\"},{\"id\":3,\"status\":\"not-started\",\"title\":\"Update Cargo.toml project name\"},{\"id\":4,\"status\":\"not-started\",\"title\":\"Check for directory renames if applicable\"}]}"}},{"type":"function","function":{"name":"grep_search","arguments":"{\"isRegexp\":false,\"query\":\"gemini-ollama\"}"}}]}
+
+        ```"#;
+
+                let calls = parse_tool_calls_from_text(payload, "seed").expect("expected tool calls");
+                assert_eq!(calls.len(), 2);
+
+                let first_name = calls[0]
+                    .get("function")
+                    .and_then(Value::as_object)
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .expect("first tool name should be present");
+                assert_eq!(first_name, "manage_todo_list");
+
+                let first_arguments = calls[0]
+                    .get("function")
+                    .and_then(Value::as_object)
+                    .and_then(|function| function.get("arguments"))
+                    .and_then(Value::as_str)
+                    .expect("first tool arguments should be present");
+                let parsed_first_arguments: Value =
+                    serde_json::from_str(first_arguments).expect("first arguments should be valid JSON");
+                assert_eq!(parsed_first_arguments["todoList"][0]["id"], 1);
+
+                let second_name = calls[1]
+                    .get("function")
+                    .and_then(Value::as_object)
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .expect("second tool name should be present");
+                assert_eq!(second_name, "grep_search");
+            }
+
+        #[test]
+        fn parses_tool_calls_from_extension_prefixed_fenced_json_block() {
+            let payload = r#"[gemini-proxy-extension] gemini generate response ```json
+    {"tool_calls":[{"type":"function","function":{"name":"manage_todo_list","arguments":"{\"todoList\":[{\"id\":1,\"status\":\"in-progress\",\"title\":\"Search for 'gemini-ollama' in the workspace\"},{\"id\":2,\"status\":\"not-started\",\"title\":\"Update Cargo.toml project name\"},{\"id\":3,\"status\":\"not-started\",\"title\":\"Update extension manifest and files\"},{\"id\":4,\"status\":\"not-started\",\"title\":\"Update docker scripts and AGENTS.md\"}]}"}},{"type":"function","function":{"name":"grep_search","arguments":"{\"isRegexp\":false,\"query\":\"gemini-ollama\"}"}}]}
+    ```"#;
+
+            let calls = parse_tool_calls_from_text(payload, "seed").expect("expected tool calls");
+            assert_eq!(calls.len(), 2);
+
+            let first_name = calls[0]
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .expect("first tool name should be present");
+            assert_eq!(first_name, "manage_todo_list");
+
+            let second_name = calls[1]
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .expect("second tool name should be present");
+            assert_eq!(second_name, "grep_search");
+
+            let first_arguments = calls[0]
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|function| function.get("arguments"))
+                .and_then(Value::as_str)
+                .expect("first tool arguments should be present");
+            let parsed_first_arguments: Value =
+                serde_json::from_str(first_arguments).expect("first arguments should be valid JSON");
+            assert_eq!(parsed_first_arguments["todoList"][0]["id"], 1);
+        }
 }
