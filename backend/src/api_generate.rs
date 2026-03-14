@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use rocket::post;
 use rocket::response::stream::TextStream;
 use rocket::State;
@@ -104,9 +104,33 @@ fn normalize_files(images: Option<Vec<String>>) -> Vec<ExtensionFile> {
     normalized
 }
 
+fn validate_generate_request(req: &GenerateRequest) -> AppResult<()> {
+    if req.suffix.is_some() {
+        return Err(anyhow!("the `suffix` field is not supported").into());
+    }
+
+    if let Some(format) = &req.format {
+        let is_json_string = matches!(format, serde_json::Value::String(value) if value == "json");
+        if !is_json_string {
+            return Err(anyhow!("the `format` field only supports the string `json`").into());
+        }
+    }
+
+    if req.raw.is_some() {
+        return Err(anyhow!("the `raw` field is not supported").into());
+    }
+
+    if req.logprobs.is_some() || req.top_logprobs.is_some() {
+        return Err(anyhow!("the `logprobs` and `top_logprobs` fields are not supported").into());
+    }
+
+    Ok(())
+}
+
 #[post("/api/generate", format = "json", data = "<payload>")]
 pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state: &State<ExtensionBridge>) -> AppResult<TextStream![String]> {
     let req = payload.into_inner();
+    validate_generate_request(&req)?;
     let model = req.model;
     let prompt = req.prompt.unwrap_or_default();
     let files = normalize_files(req.images);
