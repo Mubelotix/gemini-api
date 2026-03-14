@@ -104,6 +104,30 @@ fn normalize_files(images: Option<Vec<String>>) -> Vec<ExtensionFile> {
     normalized
 }
 
+fn format_prompt(system: Option<String>, prompt: String) -> String {
+    if prompt.trim().is_empty() {
+        return prompt;
+    }
+
+    let Some(system_text) = system.filter(|value| !value.trim().is_empty()) else {
+        return prompt;
+    };
+
+    let mut messages = Vec::new();
+
+    messages.push(serde_json::json!({
+        "role": "system",
+        "content": system_text,
+    }));
+
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": prompt,
+    }));
+
+    serde_json::to_string(&messages).unwrap_or_else(|_| "[]".to_string())
+}
+
 fn validate_generate_request(req: &GenerateRequest) -> AppResult<()> {
     if req.suffix.is_some() {
         return Err(anyhow!("the `suffix` field is not supported").into());
@@ -132,7 +156,7 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
     let req = payload.into_inner();
     validate_generate_request(&req)?;
     let model = req.model;
-    let prompt = req.prompt.unwrap_or_default();
+    let prompt = format_prompt(req.system, req.prompt.unwrap_or_default());
     let files = normalize_files(req.images);
     let stream_enabled = req.stream.unwrap_or(true);
     let created_at = "2026-03-13T00:00:00.000000000Z".to_string();
