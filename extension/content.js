@@ -135,6 +135,15 @@ function getGeminiEditor() {
 	return editor;
 }
 
+function isGeminiResponding() {
+	const stopButton = document.querySelector('button[aria-label="Stop response"]');
+	if (!stopButton) {
+		return false;
+	}
+
+	return stopButton.getAttribute('aria-disabled') !== 'true';
+}
+
 function isGeminiGuestUploadBlocked() {
 	const innerText = document.body?.innerText ?? '';
 	const normalized = innerText.replace(/\s+/g, ' ').trim();
@@ -338,6 +347,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 		} catch (e) {
 			sendResponse({ markdown: null, error: String(e) });
 		}
+		return true;
+	}
+
+	if (message.type === 'gemini-is-responding') {
+		sendResponse({ isResponding: isGeminiResponding() });
 		return true;
 	}
 });
