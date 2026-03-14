@@ -676,7 +676,7 @@ fn normalize_tool_calls(raw_calls: &[Value], id_seed: &str) -> Vec<Value> {
         };
 
         let arguments_string = match function_obj.get("arguments") {
-            Some(Value::String(s)) => s.clone(),
+            Some(Value::String(s)) => normalize_arguments_string(s),
             Some(other) => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
             None => "{}".to_string(),
         };
@@ -692,6 +692,149 @@ fn normalize_tool_calls(raw_calls: &[Value], id_seed: &str) -> Vec<Value> {
     }
 
     normalized
+}
+
+fn find_quote_ending_value(text: &str, mut index: usize) -> Option<usize> {
+    while let Some((offset, ch)) = text[index..].char_indices().next() {
+        if ch != '"' {
+            index += ch.len_utf8();
+            continue;
+        }
+
+        let quote_index = index + offset;
+        let mut lookahead = quote_index + 1;
+
+        while let Some(next) = text[lookahead..].chars().next() {
+            if next.is_whitespace() {
+                lookahead += next.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        if text[lookahead..].starts_with('}') {
+            return Some(quote_index);
+        }
+
+        if text[lookahead..].starts_with(',') {
+            lookahead += 1;
+            while let Some(next) = text[lookahead..].chars().next() {
+                if next.is_whitespace() {
+                    lookahead += next.len_utf8();
+                    continue;
+                }
+                break;
+            }
+            if text[lookahead..].starts_with('"') {
+                return Some(quote_index);
+            }
+        }
+
+        index = quote_index + 1;
+    }
+
+    None
+}
+
+fn parse_loose_object_arguments(text: &str) -> Option<Value> {
+    let trimmed = text.trim();
+    if !(trimmed.starts_with('{') && trimmed.ends_with('}')) {
+        return None;
+    }
+
+    let mut index = 1usize;
+    let mut map = serde_json::Map::new();
+
+    loop {
+        while let Some(ch) = trimmed[index..].chars().next() {
+            if ch.is_whitespace() || ch == ',' {
+                index += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        if index >= trimmed.len() || trimmed[index..].starts_with('}') {
+            break;
+        }
+
+        if !trimmed[index..].starts_with('"') {
+            return None;
+        }
+        index += 1;
+        let key_end_rel = trimmed[index..].find('"')?;
+        let key_end = index + key_end_rel;
+        let key = trimmed[index..key_end].to_string();
+        index = key_end + 1;
+
+        while let Some(ch) = trimmed[index..].chars().next() {
+            if ch.is_whitespace() {
+                index += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+        if !trimmed[index..].starts_with(':') {
+            return None;
+        }
+        index += 1;
+
+        while let Some(ch) = trimmed[index..].chars().next() {
+            if ch.is_whitespace() {
+                index += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        let value = if trimmed[index..].starts_with('"') {
+            let value_start = index + 1;
+            let value_end = find_quote_ending_value(trimmed, value_start)?;
+            index = value_end + 1;
+            Value::String(trimmed[value_start..value_end].to_string())
+        } else if trimmed[index..].starts_with('{') {
+            let end = find_matching_delimiter(trimmed, index, '{', '}')?;
+            let raw = &trimmed[index..=end];
+            index = end + 1;
+            serde_json::from_str(raw).ok().unwrap_or_else(|| Value::String(raw.to_string()))
+        } else if trimmed[index..].starts_with('[') {
+            let end = find_matching_delimiter(trimmed, index, '[', ']')?;
+            let raw = &trimmed[index..=end];
+            index = end + 1;
+            serde_json::from_str(raw).ok().unwrap_or_else(|| Value::String(raw.to_string()))
+        } else {
+            let mut end = index;
+            while let Some(ch) = trimmed[end..].chars().next() {
+                if ch == ',' || ch == '}' {
+                    break;
+                }
+                end += ch.len_utf8();
+            }
+            let raw = trimmed[index..end].trim();
+            index = end;
+            serde_json::from_str(raw).ok().unwrap_or_else(|| Value::String(raw.to_string()))
+        };
+
+        map.insert(key, value);
+    }
+
+    Some(Value::Object(map))
+}
+
+fn normalize_arguments_string(raw: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<Value>(raw)
+        && let Ok(serialized) = serde_json::to_string(&value)
+    {
+        return serialized;
+    }
+
+    if let Some(value) = parse_loose_object_arguments(raw)
+        && let Ok(serialized) = serde_json::to_string(&value)
+    {
+        return serialized;
+    }
+
+    raw.to_string()
 }
 
 fn extract_json_candidate_from_text(text: &str) -> Option<&str> {
@@ -1170,5 +1313,35 @@ mod tests {
             serde_json::from_str(second_arguments).expect("second arguments should be valid JSON");
         assert_eq!(parsed_second_arguments["isRegexp"], false);
         assert_eq!(parsed_second_arguments["query"], "gemini-ollama");
+    }
+
+    #[test]
+    fn parses_tool_calls_with_embedded_quotes_and_newlines_in_arguments() {
+        let payload = r#"{"tool_calls":[{"type":"function","function":{"name":"replace_string_in_file","arguments":"{"filePath":"/home/mubelotix/projects/gemini-ollama/ff.sh","newString":"CRX_FILE=\"$BUILD_DIR/extension.crx\"\nPOLICY_FILE=\"$BUILD_DIR/gemini-proxy-extension-policy.json\"","oldString":"CRX_FILE=\"$BUILD_DIR/extension.crx\"\nPOLICY_FILE=\"$BUILD_DIR/gemini-proxy-extension-policy.json\""}"}},{"type":"function","function":{"name":"replace_string_in_file","arguments":"{"filePath":"/home/mubelotix/projects/gemini-ollama/extension/manifest.json","newString":"  \"name\": \"Gemini Proxy Extension\",\n  \"version\": \"1.0.0\",\n  \"description\": \"Gemini Proxy browser extension.\",","oldString":"  \"name\": \"Gemini Proxy Extension\",\n  \"version\": \"1.0.0\",\n  \"description\": \"Gemini Proxy browser extension.\","}"}}]}"#;
+
+        let calls = parse_tool_calls_from_text(payload, "seed").expect("expected tool calls");
+        assert_eq!(calls.len(), 2);
+
+        for call in calls {
+            let function = call
+                .get("function")
+                .and_then(Value::as_object)
+                .expect("function object must be present");
+            assert_eq!(
+                function.get("name").and_then(Value::as_str),
+                Some("replace_string_in_file")
+            );
+
+            let arguments = function
+                .get("arguments")
+                .and_then(Value::as_str)
+                .expect("arguments must be present");
+            let parsed_arguments: Value =
+                serde_json::from_str(arguments).expect("arguments should be valid JSON");
+
+            assert!(parsed_arguments.get("filePath").and_then(Value::as_str).is_some());
+            assert!(parsed_arguments.get("newString").and_then(Value::as_str).is_some());
+            assert!(parsed_arguments.get("oldString").and_then(Value::as_str).is_some());
+        }
     }
 }
