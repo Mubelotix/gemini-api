@@ -1000,10 +1000,80 @@ fn sanitize_malformed_tool_arguments_json(text: &str) -> String {
     out
 }
 
+fn repair_incomplete_json(text: &str) -> String {
+    let mut repaired = text.trim().to_string();
+
+    while repaired.ends_with(',') {
+        repaired.pop();
+        repaired = repaired.trim_end().to_string();
+    }
+
+    let mut stack = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for ch in repaired.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+
+        if ch == '{' || ch == '[' {
+            stack.push(ch);
+            continue;
+        }
+
+        if ch == '}' {
+            if matches!(stack.last(), Some('{')) {
+                stack.pop();
+            }
+            continue;
+        }
+
+        if ch == ']'
+            && matches!(stack.last(), Some('['))
+        {
+            stack.pop();
+        }
+    }
+
+    if in_string {
+        repaired.push('"');
+    }
+
+    while let Some(open) = stack.pop() {
+        repaired.push(match open {
+            '{' => '}',
+            '[' => ']',
+            _ => continue,
+        });
+    }
+
+    repaired
+}
+
 fn parse_tool_calls_from_text(text: &str, id_seed: &str) -> Option<Vec<Value>> {
     let sanitized = sanitize_malformed_tool_arguments_json(text);
     let candidate = extract_json_candidate_from_text(&sanitized)?;
-    let parsed: Value = serde_json::from_str(candidate).ok()?;
+    let repaired = repair_incomplete_json(candidate);
+    let parsed: Value = serde_json::from_str(&repaired).ok()?;
 
     let tool_calls = if let Some(tool_calls_array) = parsed
         .as_object()
@@ -1343,5 +1413,33 @@ mod tests {
             assert!(parsed_arguments.get("newString").and_then(Value::as_str).is_some());
             assert!(parsed_arguments.get("oldString").and_then(Value::as_str).is_some());
         }
+    }
+
+    #[test]
+    fn parses_truncated_tool_calls_payload() {
+        let payload = r#"{"tool_calls":[{"type":"function","function":{"name":"read_file","arguments":"{"endLine":20,"filePath":"/home/mubelotix/projects/gemini-ollama/backend/Cargo.toml","startLine":1}"}},"#;
+
+        let calls = parse_tool_calls_from_text(payload, "seed").expect("expected tool calls");
+        assert_eq!(calls.len(), 1);
+
+        let function = calls[0]
+            .get("function")
+            .and_then(Value::as_object)
+            .expect("function object must be present");
+        assert_eq!(function.get("name").and_then(Value::as_str), Some("read_file"));
+
+        let arguments = function
+            .get("arguments")
+            .and_then(Value::as_str)
+            .expect("arguments must be present");
+        let parsed_arguments: Value =
+            serde_json::from_str(arguments).expect("arguments should be valid JSON");
+
+        assert_eq!(parsed_arguments["startLine"], 1);
+        assert_eq!(parsed_arguments["endLine"], 20);
+        assert_eq!(
+            parsed_arguments["filePath"],
+            "/home/mubelotix/projects/gemini-ollama/backend/Cargo.toml"
+        );
     }
 }
