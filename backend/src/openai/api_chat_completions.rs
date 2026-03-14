@@ -595,11 +595,17 @@ fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
             "Do not call any tool. Return only normal assistant text.".to_string()
         }
         ToolChoiceMode::Auto => {
-            "You may return assistant text first. If you call tools, output exactly one tool-calls JSON block at the end, with no assistant text after it.".to_string()
+            "Tools are available and it can be smart to use them when they help. You may either return assistant text or call one or more tools.".to_string()
         }
         ToolChoiceMode::Required => {
-            "You must call one or more tools. You may include assistant text first, then output exactly one tool-calls JSON block at the end.".to_string()
+            "You must call at least one tool in this response. Do not return a text-only response.".to_string()
         }
+    };
+
+    let stop_wait_line = if matches!(behavior.mode, ToolChoiceMode::Auto) {
+        "If you intend to stop, wait, or ask for user input, output assistant text only and do not output any tool-calls block, because tool calls trigger immediate reprompting."
+    } else {
+        ""
     };
 
     let forced_line = behavior
@@ -619,9 +625,10 @@ fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
 ```"#;
 
     Some(format!(
-        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\nIf you call tools, your output must be in this order only:\n1) Optional assistant text first.\n2) Exactly one fenced json code block containing \"tool_calls\" as the final output segment.\nDo not output assistant text after the tool-calls block.\nRequired shape inside the code block:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
+        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\n{}\nIf you call tools, your output must be in this order only:\n1) Optional assistant text first.\n2) Exactly one fenced json code block containing \"tool_calls\" as the final output segment.\nDo not output assistant text after the tool-calls block.\nRequired shape inside the code block:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
         mode_line,
         forced_line,
+        stop_wait_line,
         valid_example,
         tools_list
     ))

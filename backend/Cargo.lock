@@ -66,17 +66,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backend"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rocket",
- "rocket_ws",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "binascii"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -370,6 +359,17 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "gemini-proxy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rocket",
+ "rocket_ws",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
