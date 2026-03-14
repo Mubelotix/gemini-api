@@ -4,6 +4,7 @@ mod api_pull;
 mod api_push;
 mod api_embed;
 mod api_copy;
+mod api_version;
 mod api_tags;
 mod error;
 
@@ -19,6 +20,7 @@ use api_pull::pull_model;
 use api_push::push_model;
 use api_embed::embed_model;
 use api_copy::copy_model;
+use api_version::version;
 use api_tags::{handle_client_message, tags, ExtensionBridge};
 #[get("/")]
 fn index() -> &'static str {
@@ -76,5 +78,5 @@ fn rocket() -> _ {
 
     rocket::custom(figment)
         .manage(bridge)
-        .mount("/", routes![index, incoming_requests, tags, generate, delete_model, pull_model, push_model, embed_model, copy_model])
+        .mount("/", routes![index, incoming_requests, tags, generate, delete_model, pull_model, push_model, embed_model, copy_model, version])
 }
