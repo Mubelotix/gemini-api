@@ -15,6 +15,10 @@ pub struct ChatCompletionsRequest {
     pub model: String,
     pub messages: Vec<ChatCompletionsMessage>,
     #[serde(default)]
+    pub tools: Option<Vec<Value>>,
+    #[serde(default)]
+    pub tool_choice: Option<Value>,
+    #[serde(default)]
     pub stream: Option<bool>,
 }
 
@@ -23,6 +27,12 @@ pub struct ChatCompletionsMessage {
     pub role: String,
     #[serde(default)]
     pub content: Option<Value>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,13 +40,22 @@ struct PromptMessage {
     role: String,
     content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<usize>>,
 }
 
 #[derive(Debug, Serialize)]
 struct ChatCompletionMessage {
     role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<Value>>,
     refusal: Option<Value>,
     annotations: Vec<Value>,
 }
@@ -89,6 +108,22 @@ struct ChatCompletionDelta {
     role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<Value>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ToolChoiceMode {
+    None,
+    Auto,
+    Required,
+}
+
+#[derive(Debug)]
+struct ToolBehavior {
+    mode: ToolChoiceMode,
+    available_tools: Vec<Value>,
+    forced_tool: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,7 +197,15 @@ fn flatten_prompt_and_files(messages: Vec<ChatCompletionsMessage>) -> (String, V
     let mut files = Vec::new();
 
     for message in messages {
-        let (content, image_payloads) = extract_text_and_images(message.content);
+        let ChatCompletionsMessage {
+            role,
+            content,
+            name,
+            tool_call_id,
+            tool_calls,
+        } = message;
+
+        let (content, image_payloads) = extract_text_and_images(content);
         let mut image_indices = Vec::new();
 
         for image in image_payloads {
@@ -172,8 +215,11 @@ fn flatten_prompt_and_files(messages: Vec<ChatCompletionsMessage>) -> (String, V
         }
 
         prompt_messages.push(PromptMessage {
-            role: message.role,
+            role,
             content,
+            name,
+            tool_call_id,
+            tool_calls,
             images: if image_indices.is_empty() {
                 None
             } else {
@@ -205,7 +251,8 @@ fn build_non_stream_response(id: String, created: u64, model: String, content: S
             index: 0,
             message: ChatCompletionMessage {
                 role: "assistant".to_string(),
-                content,
+                content: Some(content),
+                tool_calls: None,
                 refusal: None,
                 annotations: Vec::new(),
             },
@@ -246,6 +293,7 @@ fn build_stream_chunk(id: String, created: u64, model: String, content: Option<S
                     None
                 },
                 content,
+                tool_calls: None,
             },
             logprobs: None,
             finish_reason: if done {
@@ -255,6 +303,440 @@ fn build_stream_chunk(id: String, created: u64, model: String, content: Option<S
             },
         }],
     }
+}
+
+fn build_stream_tool_call_chunk(
+    id: String,
+    created: u64,
+    model: String,
+    tool_calls: Vec<Value>,
+    include_role: bool,
+    done: bool,
+) -> ChatCompletionChunk {
+    ChatCompletionChunk {
+        id,
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model,
+        choices: vec![ChatCompletionStreamChoice {
+            index: 0,
+            delta: ChatCompletionDelta {
+                role: if include_role {
+                    Some("assistant".to_string())
+                } else {
+                    None
+                },
+                content: None,
+                tool_calls: Some(tool_calls),
+            },
+            logprobs: None,
+            finish_reason: if done {
+                Some("tool_calls".to_string())
+            } else {
+                None
+            },
+        }],
+    }
+}
+
+fn build_non_stream_tool_response(
+    id: String,
+    created: u64,
+    model: String,
+    tool_calls: Vec<Value>,
+) -> ChatCompletionResponse {
+    ChatCompletionResponse {
+        id,
+        object: "chat.completion".to_string(),
+        created,
+        model,
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatCompletionMessage {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(tool_calls),
+                refusal: None,
+                annotations: Vec::new(),
+            },
+            logprobs: None,
+            finish_reason: "tool_calls".to_string(),
+        }],
+        usage: CompletionUsage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            prompt_tokens_details: PromptUsageDetails {
+                cached_tokens: 0,
+                audio_tokens: 0,
+            },
+            completion_tokens_details: CompletionUsageDetails {
+                reasoning_tokens: 0,
+                audio_tokens: 0,
+                accepted_prediction_tokens: 0,
+                rejected_prediction_tokens: 0,
+            },
+        },
+        service_tier: "default".to_string(),
+    }
+}
+
+fn parse_tool_choice_mode(mode: &str) -> Option<ToolChoiceMode> {
+    match mode {
+        "none" => Some(ToolChoiceMode::None),
+        "auto" => Some(ToolChoiceMode::Auto),
+        "required" => Some(ToolChoiceMode::Required),
+        _ => None,
+    }
+}
+
+fn as_array(value: &Value) -> Vec<Value> {
+    value
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn resolve_tool_behavior(tools: Option<Vec<Value>>, tool_choice: Option<Value>) -> ToolBehavior {
+    let declared_tools = tools.unwrap_or_default();
+    let default_mode = if declared_tools.is_empty() {
+        ToolChoiceMode::None
+    } else {
+        ToolChoiceMode::Auto
+    };
+
+    let mut mode = default_mode;
+    let mut available_tools = declared_tools;
+    let mut forced_tool = None;
+
+    if let Some(choice) = tool_choice {
+        if let Some(choice_mode) = choice.as_str().and_then(parse_tool_choice_mode) {
+            mode = choice_mode;
+        } else if let Some(choice_obj) = choice.as_object() {
+            let choice_type = choice_obj
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+
+            if choice_type == "function" || choice_obj.contains_key("function") {
+                if let Some(function_obj) = choice_obj.get("function").and_then(Value::as_object)
+                    && let Some(name) = function_obj.get("name").and_then(Value::as_str)
+                {
+                    forced_tool = Some(serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                        }
+                    }));
+                    mode = ToolChoiceMode::Required;
+                }
+            } else if choice_type == "custom" || choice_obj.contains_key("custom") {
+                if let Some(custom_obj) = choice_obj.get("custom").and_then(Value::as_object)
+                    && let Some(name) = custom_obj.get("name").and_then(Value::as_str)
+                {
+                    forced_tool = Some(serde_json::json!({
+                        "type": "custom",
+                        "custom": {
+                            "name": name,
+                        }
+                    }));
+                    mode = ToolChoiceMode::Required;
+                }
+            } else if choice_type == "allowed_tools" || choice_obj.contains_key("allowed_tools") {
+                if let Some(m) = choice_obj.get("mode").and_then(Value::as_str).and_then(parse_tool_choice_mode)
+                    && !matches!(m, ToolChoiceMode::None)
+                {
+                    mode = m;
+                }
+
+                let maybe_allowed_tools = choice_obj
+                    .get("allowed_tools")
+                    .and_then(Value::as_object)
+                    .and_then(|allowed_obj| allowed_obj.get("tools"))
+                    .map(as_array)
+                    .or_else(|| choice_obj.get("tools").map(as_array));
+
+                if let Some(allowed_tools) = maybe_allowed_tools {
+                    available_tools = allowed_tools;
+                }
+            } else if let Some(m) = choice_obj
+                .get("mode")
+                .and_then(Value::as_str)
+                .and_then(parse_tool_choice_mode)
+            {
+                mode = m;
+            }
+        }
+    }
+
+    ToolBehavior {
+        mode,
+        available_tools,
+        forced_tool,
+    }
+}
+
+fn format_tool_definitions(tools: &[Value]) -> String {
+    let mut lines = Vec::new();
+
+    for tool in tools {
+        let Some(tool_obj) = tool.as_object() else {
+            continue;
+        };
+
+        let tool_type = tool_obj
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("function");
+
+        if tool_type == "function" {
+            let Some(function_obj) = tool_obj.get("function").and_then(Value::as_object) else {
+                continue;
+            };
+
+            let Some(name) = function_obj.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+
+            let description = function_obj
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let parameters = function_obj
+                .get("parameters")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}));
+            let strict = function_obj
+                .get("strict")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            lines.push(format!(
+                "- FUNCTION {name}: description={description:?}, strict={strict}, parameters={}",
+                parameters
+            ));
+            continue;
+        }
+
+        if tool_type == "custom" {
+            let Some(custom_obj) = tool_obj.get("custom").and_then(Value::as_object) else {
+                continue;
+            };
+
+            let Some(name) = custom_obj.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+
+            let description = custom_obj
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let format = custom_obj
+                .get("format")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"type": "text"}));
+
+            lines.push(format!(
+                "- CUSTOM {name}: description={description:?}, format={}",
+                format
+            ));
+        }
+    }
+
+    if lines.is_empty() {
+        "- (no valid tool definitions were provided)".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn render_forced_tool_line(forced_tool: &Value) -> Option<String> {
+    let forced_obj = forced_tool.as_object()?;
+    let tool_type = forced_obj.get("type").and_then(Value::as_str).unwrap_or_default();
+
+    if tool_type == "function" {
+        let name = forced_obj
+            .get("function")
+            .and_then(Value::as_object)
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)?;
+        return Some(format!(
+            "When calling a tool, call this exact function name only: {}.",
+            name
+        ));
+    }
+
+    if tool_type == "custom" {
+        let name = forced_obj
+            .get("custom")
+            .and_then(Value::as_object)
+            .and_then(|custom| custom.get("name"))
+            .and_then(Value::as_str)?;
+        return Some(format!(
+            "When calling a tool, call this exact custom tool name only: {}.",
+            name
+        ));
+    }
+
+    None
+}
+
+fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
+    let use_tools = !matches!(behavior.mode, ToolChoiceMode::None)
+        && (!behavior.available_tools.is_empty() || behavior.forced_tool.is_some());
+
+    if !use_tools {
+        return None;
+    }
+
+    let mode_line = match behavior.mode {
+        ToolChoiceMode::None => {
+            "Do not call any tool. Return only normal assistant text.".to_string()
+        }
+        ToolChoiceMode::Auto => {
+            "You may either return normal assistant text OR call one or more tools.".to_string()
+        }
+        ToolChoiceMode::Required => {
+            "You must call one or more tools and must not return plain assistant text.".to_string()
+        }
+    };
+
+    let forced_line = behavior
+        .forced_tool
+        .as_ref()
+        .and_then(render_forced_tool_line)
+        .unwrap_or_default();
+
+    let tools_list = if let Some(forced) = &behavior.forced_tool {
+        format_tool_definitions(std::slice::from_ref(forced))
+    } else {
+        format_tool_definitions(&behavior.available_tools)
+    };
+
+    Some(format!(
+        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\nIf you call tools, respond with ONLY a valid JSON object in this exact shape:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": {{...}}}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
+        mode_line,
+        forced_line,
+        tools_list
+    ))
+}
+
+fn normalize_tool_calls(raw_calls: &[Value], id_seed: &str) -> Vec<Value> {
+    let mut normalized = Vec::new();
+
+    for (index, raw_call) in raw_calls.iter().enumerate() {
+        let Some(call_obj) = raw_call.as_object() else {
+            continue;
+        };
+
+        let explicit_type = call_obj
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let call_id = call_obj
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("call_{}_{}", id_seed, index));
+
+        if explicit_type == "custom" || call_obj.contains_key("custom") {
+            let Some(custom_obj) = call_obj.get("custom").and_then(Value::as_object) else {
+                continue;
+            };
+
+            let Some(name) = custom_obj.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+
+            let input = custom_obj
+                .get("input")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+
+            normalized.push(serde_json::json!({
+                "id": call_id,
+                "type": "custom",
+                "custom": {
+                    "name": name,
+                    "input": input,
+                }
+            }));
+            continue;
+        }
+
+        let Some(function_obj) = call_obj.get("function").and_then(Value::as_object) else {
+            continue;
+        };
+
+        let Some(name) = function_obj.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+
+        let arguments_string = match function_obj.get("arguments") {
+            Some(Value::String(s)) => s.clone(),
+            Some(other) => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        };
+
+        normalized.push(serde_json::json!({
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": arguments_string,
+            }
+        }));
+    }
+
+    normalized
+}
+
+fn extract_json_candidate_from_text(text: &str) -> Option<&str> {
+    let trimmed = text.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return Some(trimmed);
+    }
+
+    let fence_start = trimmed.find("```")?;
+    let after_fence = &trimmed[fence_start + 3..];
+    let body_start = if let Some(newline_index) = after_fence.find('\n') {
+        &after_fence[newline_index + 1..]
+    } else {
+        after_fence
+    };
+    let fence_end = body_start.find("```")?;
+    Some(body_start[..fence_end].trim())
+}
+
+fn parse_tool_calls_from_text(text: &str, id_seed: &str) -> Option<Vec<Value>> {
+    let candidate = extract_json_candidate_from_text(text)?;
+    let parsed: Value = serde_json::from_str(candidate).ok()?;
+
+    let tool_calls = if let Some(tool_calls_array) = parsed
+        .as_object()
+        .and_then(|obj| obj.get("tool_calls"))
+        .and_then(Value::as_array)
+    {
+        tool_calls_array.clone()
+    } else if let Some(array) = parsed.as_array() {
+        array.clone()
+    } else {
+        return None;
+    };
+
+    let normalized = normalize_tool_calls(&tool_calls, id_seed);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn select_effective_tools_for_prompt(behavior: &ToolBehavior) -> Vec<Value> {
+    if let Some(forced_tool) = &behavior.forced_tool {
+        return vec![forced_tool.clone()];
+    }
+    behavior.available_tools.clone()
 }
 
 #[post("/chat/completions", format = "json", data = "<payload>")]
@@ -270,7 +752,13 @@ pub async fn chat_completions_v1(payload: Json<ChatCompletionsRequest>, state: &
 async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<ExtensionBridge>) -> AppResult<TextStream![String]> {
     let stream_enabled = req.stream.unwrap_or(false);
     let model = req.model;
-    let (prompt, files) = flatten_prompt_and_files(req.messages);
+    let tool_behavior = resolve_tool_behavior(req.tools, req.tool_choice);
+    let (prompt_base, files) = flatten_prompt_and_files(req.messages);
+    let prompt = if let Some(instructions) = build_tool_instruction_block(&tool_behavior) {
+        format!("{}\n\n{}", prompt_base, instructions)
+    } else {
+        prompt_base
+    };
 
     let id = format!("chatcmpl-{}", uuid_like_suffix(unix_now(), &model));
     let created = unix_now();
@@ -278,6 +766,8 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
     let mut stream_rx_opt = None;
     let mut stream_unsupported_model = false;
     let mut non_stream_body_opt = None;
+    let tool_mode_active = !matches!(tool_behavior.mode, ToolChoiceMode::None)
+        && !select_effective_tools_for_prompt(&tool_behavior).is_empty();
 
     if stream_enabled {
         if model.starts_with("gemini") {
@@ -305,12 +795,17 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
             format!("Unsupported model: {}", model)
         };
 
-        non_stream_body_opt = Some(build_non_stream_response(
-            id.clone(),
-            created,
-            model.clone(),
-            response_text,
-        ));
+        let maybe_tool_calls = if tool_mode_active {
+            parse_tool_calls_from_text(&response_text, &id)
+        } else {
+            None
+        };
+
+        non_stream_body_opt = Some(if let Some(tool_calls) = maybe_tool_calls {
+            build_non_stream_tool_response(id.clone(), created, model.clone(), tool_calls)
+        } else {
+            build_non_stream_response(id.clone(), created, model.clone(), response_text)
+        });
     }
 
     Ok(TextStream! {
@@ -335,6 +830,92 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
             let mut emitted_role = false;
 
             if let Some(mut stream_rx) = stream_rx_opt {
+                if tool_mode_active {
+                    let mut aggregated = String::new();
+                    let mut had_error = false;
+
+                    while let Some(item) = stream_rx.recv().await {
+                        let (text, done) = match item {
+                            Ok(item) => {
+                                let chunk: GenerateCommandChunk = serde_json::from_value(item.value)
+                                    .unwrap_or(GenerateCommandChunk {
+                                        text: String::new(),
+                                        error: Some("failed to decode extension response chunk".to_string()),
+                                    });
+
+                                let text = if let Some(error) = chunk.error {
+                                    had_error = true;
+                                    format!("Gemini stream error: {}", error)
+                                } else {
+                                    chunk.text
+                                };
+                                (text, item.done)
+                            }
+                            Err(error) => {
+                                had_error = true;
+                                (format!("Gemini stream error: {}", error), true)
+                            }
+                        };
+
+                        aggregated.push_str(&text);
+
+                        if done {
+                            break;
+                        }
+                    }
+
+                    if let Some(tool_calls) = (!had_error)
+                        .then(|| parse_tool_calls_from_text(&aggregated, &id))
+                        .flatten()
+                    {
+                        let chunk = build_stream_tool_call_chunk(
+                            id.clone(),
+                            created,
+                            model.clone(),
+                            tool_calls,
+                            true,
+                            true,
+                        );
+
+                        if let Ok(line) = serde_json::to_string(&chunk) {
+                            yield format!("data: {}\n\n", line);
+                        }
+                    } else {
+                        let role_chunk = build_stream_chunk(
+                            id.clone(),
+                            created,
+                            model.clone(),
+                            None,
+                            true,
+                            false,
+                        );
+
+                        if let Ok(line) = serde_json::to_string(&role_chunk) {
+                            yield format!("data: {}\n\n", line);
+                        }
+
+                        let final_chunk = build_stream_chunk(
+                            id.clone(),
+                            created,
+                            model.clone(),
+                            if aggregated.is_empty() {
+                                None
+                            } else {
+                                Some(aggregated)
+                            },
+                            false,
+                            true,
+                        );
+
+                        if let Ok(line) = serde_json::to_string(&final_chunk) {
+                            yield format!("data: {}\n\n", line);
+                        }
+                    }
+
+                    yield "data: [DONE]\n\n".to_string();
+                    return;
+                }
+
                 while let Some(item) = stream_rx.recv().await {
                     let (text, done) = match item {
                         Ok(item) => {
