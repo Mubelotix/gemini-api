@@ -2,6 +2,63 @@ console.log('[gemini-proxy-extension] content script injected on', window.locati
 
 // ---- Isolated Gemini response markdown extractor ----
 
+function normalizeFenceLanguage(label) {
+	const normalized = String(label ?? '')
+		.trim()
+		.toLowerCase()
+		.replace(/\s+/g, '');
+	if (!/^[a-z0-9_+#-]{1,20}$/.test(normalized)) {
+		return '';
+	}
+	if (/^(copy|code|copycode)$/.test(normalized)) {
+		return '';
+	}
+	return normalized;
+}
+
+function detectCodeBlockLanguage(codeBlockEl, codeEl, preEl) {
+	const classLang = codeEl?.className?.match(/(?:^|\s)language-([a-zA-Z0-9_+#-]+)/)?.[1];
+	if (classLang) {
+		return classLang.toLowerCase();
+	}
+
+	if (!preEl) {
+		return '';
+	}
+
+	for (const span of Array.from(codeBlockEl.querySelectorAll('span'))) {
+		const relation = span.compareDocumentPosition(preEl);
+		if (!(relation & Node.DOCUMENT_POSITION_FOLLOWING)) {
+			continue;
+		}
+
+		const lang = normalizeFenceLanguage(span.textContent);
+		if (lang) {
+			return lang;
+		}
+	}
+
+	return '';
+}
+
+function extractCodeBlockMarkdown(codeBlockEl) {
+	const preEl = codeBlockEl.querySelector('pre');
+	if (!preEl) {
+		return Array.from(codeBlockEl.childNodes).map(domToMarkdown).join('');
+	}
+
+	const codeEl = preEl.querySelector('code');
+	const language = detectCodeBlockLanguage(codeBlockEl, codeEl, preEl);
+	const source = (codeEl ?? preEl).textContent ?? '';
+	const body = source.replace(/\n+$/, '');
+
+	if (!body.trim()) {
+		return '';
+	}
+
+	return '```' + language + '\n' + body + '\n```\n\n';
+}
+
 function domToMarkdown(node) {
 	if (node.nodeType === Node.TEXT_NODE) {
 		return node.textContent;
@@ -14,6 +71,8 @@ function domToMarkdown(node) {
 	const childMd = () => Array.from(node.childNodes).map(domToMarkdown).join('');
 
 	switch (tag) {
+		case 'code-block':
+			return extractCodeBlockMarkdown(node);
 		case 'p':      return childMd().trim() + '\n\n';
 		case 'h1':     return '# '      + childMd().trim() + '\n\n';
 		case 'h2':     return '## '     + childMd().trim() + '\n\n';
