@@ -1,13 +1,6 @@
-mod api_generate;
-mod api_chat;
+mod ollama;
+mod openai;
 mod api_common;
-mod api_delete;
-mod api_pull;
-mod api_push;
-mod api_embed;
-mod api_copy;
-mod api_models;
-mod api_version;
 mod extension_bridge;
 mod error;
 
@@ -18,15 +11,15 @@ use rocket::tokio::sync::broadcast;
 
 #[macro_use] extern crate rocket;
 
-use api_generate::generate;
-use api_chat::chat;
-use api_delete::delete_model;
-use api_pull::pull_model;
-use api_push::push_model;
-use api_embed::embed_model;
-use api_copy::copy_model;
-use api_models::{running_models, show_model, tags};
-use api_version::version;
+use ollama::api_generate::generate;
+use ollama::api_chat::chat;
+use ollama::api_delete::delete_model;
+use ollama::api_pull::pull_model;
+use ollama::api_push::push_model;
+use ollama::api_embed::embed_model;
+use ollama::api_copy::copy_model;
+use ollama::api_models::{running_models, show_model, tags};
+use ollama::api_version::version;
 use extension_bridge::{handle_client_message, ExtensionBridge};
 #[get("/")]
 fn index() -> &'static str {
