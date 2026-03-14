@@ -711,8 +711,155 @@ fn extract_json_candidate_from_text(text: &str) -> Option<&str> {
     Some(body_start[..fence_end].trim())
 }
 
+fn find_matching_delimiter(text: &str, start: usize, open: char, close: char) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if *bytes.get(start)? != open as u8 {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in text[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+        if ch == open {
+            depth += 1;
+            continue;
+        }
+        if ch == close {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(start + offset);
+            }
+        }
+    }
+
+    None
+}
+
+fn sanitize_malformed_tool_arguments_json(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+
+    while let Some(rel_index) = text[cursor..].find("\"arguments\"") {
+        let key_index = cursor + rel_index;
+        out.push_str(&text[cursor..key_index]);
+        out.push_str("\"arguments\"");
+
+        let mut index = key_index + "\"arguments\"".len();
+
+        while let Some(ch) = text[index..].chars().next() {
+            if ch.is_whitespace() {
+                out.push(ch);
+                index += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        if !text[index..].starts_with(':') {
+            cursor = key_index + 1;
+            continue;
+        }
+
+        out.push(':');
+        index += 1;
+
+        while let Some(ch) = text[index..].chars().next() {
+            if ch.is_whitespace() {
+                out.push(ch);
+                index += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        if !text[index..].starts_with('"') {
+            cursor = index;
+            continue;
+        }
+
+        let original_quote_index = index;
+        index += 1;
+
+        while let Some(ch) = text[index..].chars().next() {
+            if ch.is_whitespace() {
+                index += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        let Some(first_value_char) = text[index..].chars().next() else {
+            out.push('"');
+            cursor = index;
+            continue;
+        };
+
+        if first_value_char != '{' && first_value_char != '[' {
+            out.push_str(&text[original_quote_index..]);
+            return out;
+        }
+
+        let close = if first_value_char == '{' { '}' } else { ']' };
+        let Some(end_index) = find_matching_delimiter(text, index, first_value_char, close) else {
+            out.push_str(&text[original_quote_index..]);
+            return out;
+        };
+
+        let raw_json = &text[index..=end_index];
+        let encoded = serde_json::to_string(raw_json).unwrap_or_else(|_| "\"{}\"".to_string());
+        let encoded_inner = encoded
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(raw_json);
+
+        out.push('"');
+        out.push_str(encoded_inner);
+        out.push('"');
+
+        let mut after = end_index + 1;
+        while let Some(ch) = text[after..].chars().next() {
+            if ch.is_whitespace() {
+                after += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        if text[after..].starts_with('"') {
+            after += 1;
+        }
+
+        cursor = after;
+    }
+
+    out.push_str(&text[cursor..]);
+    out
+}
+
 fn parse_tool_calls_from_text(text: &str, id_seed: &str) -> Option<Vec<Value>> {
-    let candidate = extract_json_candidate_from_text(text)?;
+    let sanitized = sanitize_malformed_tool_arguments_json(text);
+    let candidate = extract_json_candidate_from_text(&sanitized)?;
     let parsed: Value = serde_json::from_str(candidate).ok()?;
 
     let tool_calls = if let Some(tool_calls_array) = parsed
@@ -974,4 +1121,54 @@ fn uuid_like_suffix(created: u64, model: &str) -> String {
         .take(12)
         .collect::<String>();
     format!("{}{}", created, reduced_model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_tool_calls_when_arguments_are_malformed_unescaped_json_string() {
+        let payload = r#"{"tool_calls":[{"type":"function","function":{"name":"manage_todo_list","arguments":"{"todoList":[{"id":1,"status":"in-progress","title":"Identify occurrences of 'gemini-ollama' in codebase"}]}"}},{"type":"function","function":{"name":"grep_search","arguments":"{"isRegexp":false,"query":"gemini-ollama"}"}}]}"#;
+
+        let calls = parse_tool_calls_from_text(payload, "seed").expect("expected tool calls");
+        assert_eq!(calls.len(), 2);
+
+        let first_name = calls[0]
+            .get("function")
+            .and_then(Value::as_object)
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            .expect("first tool name should be present");
+        assert_eq!(first_name, "manage_todo_list");
+
+        let first_arguments = calls[0]
+            .get("function")
+            .and_then(Value::as_object)
+            .and_then(|function| function.get("arguments"))
+            .and_then(Value::as_str)
+            .expect("first tool arguments should be present");
+        let parsed_first_arguments: Value =
+            serde_json::from_str(first_arguments).expect("first arguments should be valid JSON");
+        assert_eq!(parsed_first_arguments["todoList"][0]["id"], 1);
+
+        let second_name = calls[1]
+            .get("function")
+            .and_then(Value::as_object)
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            .expect("second tool name should be present");
+        assert_eq!(second_name, "grep_search");
+
+        let second_arguments = calls[1]
+            .get("function")
+            .and_then(Value::as_object)
+            .and_then(|function| function.get("arguments"))
+            .and_then(Value::as_str)
+            .expect("second tool arguments should be present");
+        let parsed_second_arguments: Value =
+            serde_json::from_str(second_arguments).expect("second arguments should be valid JSON");
+        assert_eq!(parsed_second_arguments["isRegexp"], false);
+        assert_eq!(parsed_second_arguments["query"], "gemini-ollama");
+    }
 }
