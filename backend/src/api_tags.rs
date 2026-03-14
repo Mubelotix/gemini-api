@@ -3,8 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result as AnyResult, anyhow, bail};
-use rocket::get;
-use rocket::serde::json::Json;
 use rocket::tokio::spawn;
 use rocket::tokio::sync::mpsc::{Sender, UnboundedReceiver, channel, unbounded_channel};
 use rocket::tokio::sync::{Mutex, broadcast};
@@ -206,43 +204,6 @@ impl GeminiGenerateResult {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct TagsResponse {
-    models: Vec<ModelEntry>,
-}
-
-#[derive(Debug, Serialize)]
-struct ModelEntry {
-    name: String,
-    model: String,
-    modified_at: String,
-    size: u64,
-    digest: String,
-    details: ModelDetails,
-}
-
-#[derive(Debug, Serialize)]
-struct ModelDetails {
-    format: String,
-    family: String,
-    families: Vec<String>,
-    parameter_size: String,
-    quantization_level: String,
-}
-
-#[get("/api/tags")]
-pub async fn tags(state: &State<ExtensionBridge>) -> Json<TagsResponse> {
-    let sign_in_present = request_gemini_sign_in_presence(state).await.ok();
-    let gemini_available = matches!(sign_in_present, Some(false));
-
-    let mut models = Vec::new();
-    if gemini_available {
-        models.push(dummy_gemini_model());
-    }
-
-    Json(TagsResponse { models })
-}
-
 pub async fn request_gemini_sign_in_presence(state: &State<ExtensionBridge>) -> AnyResult<bool> {
     ensure_extension_connected(state)?;
 
@@ -312,19 +273,3 @@ pub async fn request_gemini_generate_with_files(
     Ok(output)
 }
 
-fn dummy_gemini_model() -> ModelEntry {
-    ModelEntry {
-        name: "gemini-proxy".to_string(),
-        model: "gemini-proxy".to_string(),
-        modified_at: "2026-03-13T00:00:00.000000000Z".to_string(),
-        size: 1,
-        digest: "3f3afba5eec3eced16458929f3700a4f2aa134e7771a32339f6efd8006f2b593".to_string(), // sha256("gemini-proxy")
-        details: ModelDetails {
-            format: "gguf".to_string(),
-            family: "gemini".to_string(),
-            families: vec!["gemini".to_string()],
-            parameter_size: "20000B".to_string(),
-            quantization_level: "N/A".to_string(),
-        },
-    }
-}
