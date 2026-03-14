@@ -30,6 +30,81 @@ function ensurePreviewContainer() {
   return container;
 }
 
+function longestSharedPrefixLength(a, b) {
+  const max = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < max && a[i] === b[i]) {
+    i += 1;
+  }
+  return i;
+}
+
+function longestSuffixPrefixOverlapLength(suffixSource, prefixSource) {
+  const max = Math.min(suffixSource.length, prefixSource.length);
+  for (let len = max; len > 0; len -= 1) {
+    if (suffixSource.slice(-len) === prefixSource.slice(0, len)) {
+      return len;
+    }
+  }
+  return 0;
+}
+
+function computeFinalDelta(streamedText, finalText) {
+  if (!finalText) {
+    return '';
+  }
+  if (!streamedText) {
+    return finalText;
+  }
+  if (finalText.startsWith(streamedText)) {
+    return finalText.slice(streamedText.length);
+  }
+
+  // Gemini may repeat a prefix with slight divergence mid-stream.
+  // Prefer dropping the shared prefix to avoid duplicating already streamed text.
+  const sharedPrefixLength = longestSharedPrefixLength(streamedText, finalText);
+  if (sharedPrefixLength > 0) {
+    return finalText.slice(sharedPrefixLength);
+  }
+
+  const overlap = longestSuffixPrefixOverlapLength(streamedText, finalText);
+  if (overlap > 0) {
+    return finalText.slice(overlap);
+  }
+
+  return finalText;
+}
+
+function splitSafeChunkBeforeFence(buffer, fenceMode) {
+  if (!buffer) {
+    return { sendNow: '', keep: '', nextFenceMode: fenceMode };
+  }
+
+  if (fenceMode) {
+    return { sendNow: '', keep: buffer, nextFenceMode: true };
+  }
+
+  const fenceIndex = buffer.indexOf('```');
+  if (fenceIndex >= 0) {
+    return {
+      sendNow: buffer.slice(0, fenceIndex),
+      keep: buffer.slice(fenceIndex),
+      nextFenceMode: true,
+    };
+  }
+
+  // Keep a tiny tail to avoid missing a fence marker split across chunk boundaries.
+  if (buffer.length <= 2) {
+    return { sendNow: '', keep: buffer, nextFenceMode: false };
+  }
+
+  return {
+    sendNow: buffer.slice(0, -2),
+    keep: buffer.slice(-2),
+    nextFenceMode: false,
+  };
+}
+
 function showImagePreviewInPage(file, index) {
   const contentType = String(file?.contentType ?? file?.content_type ?? '');
   const bytes = String(file?.bytes ?? '');
@@ -249,11 +324,14 @@ function handleBackendMessage(rawData) {
       }
 
       const prompt = message.prompt ?? '';
-        const files = Array.isArray(message.files) ? message.files : [];
+      const files = Array.isArray(message.files) ? message.files : [];
       let streamedText = '';
+      let emittedText = '';
+      let pendingChunkText = '';
+      let insideFencedBlock = false;
       window.runGeminiGenerate({
         prompt,
-          files,
+        files,
         onStatus: (payload) => {
           sendToBackground('ws-status', payload);
         },
@@ -265,11 +343,27 @@ function handleBackendMessage(rawData) {
 
           streamedText += chunk;
 
+          pendingChunkText += chunk;
+          const {
+            sendNow,
+            keep,
+            nextFenceMode,
+          } = splitSafeChunkBeforeFence(pendingChunkText, insideFencedBlock);
+
+          pendingChunkText = keep;
+          insideFencedBlock = nextFenceMode;
+
+          if (sendNow.length === 0) {
+            return;
+          }
+
+          emittedText += sendNow;
+
           if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send(JSON.stringify({
               id: requestId,
               type: 'gemini-generate-response',
-              text: chunk,
+              text: sendNow,
               error: null,
               done: false,
             }));
@@ -277,9 +371,10 @@ function handleBackendMessage(rawData) {
         },
         onResult: ({ text, error }) => {
           const finalText = String(text ?? '');
-          const tail = finalText.startsWith(streamedText)
-            ? finalText.slice(streamedText.length)
-            : finalText;
+          const stablePrefix = insideFencedBlock
+            ? emittedText
+            : (emittedText + pendingChunkText);
+          const tail = computeFinalDelta(stablePrefix, finalText);
 
           if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send(JSON.stringify({
