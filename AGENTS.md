@@ -1,4 +1,5 @@
 This codebase is complex and always requires Claude models.
+When files get a little big, you may attempt to split them.
 
 ## Docker script
 
@@ -19,3 +20,8 @@ We only return errors when we know the client won't be satisfied with what we ca
 
 When fixing an issue, you may add a unit test if relevant.
 Unit tests must not however require internet access and must not need to interact with the extension.
+
+## Extension
+
+All parsing should be done in a way that minimizes the risk of things breakings when the website is updated (i.e. not relying on class names if possible).
+
