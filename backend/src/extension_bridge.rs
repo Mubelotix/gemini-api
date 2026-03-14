@@ -272,4 +272,3 @@ pub async fn request_gemini_generate_with_files(
 
     Ok(output)
 }
-

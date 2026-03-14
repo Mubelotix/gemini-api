@@ -5,7 +5,7 @@ use rocket::State;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::api_tags::{ExtensionBridge, request_gemini_sign_in_presence};
+use crate::extension_bridge::{ExtensionBridge, request_gemini_sign_in_presence};
 use crate::error::AppResult;
 use crate::app_bail as bail;
 

@@ -6,7 +6,7 @@ mod api_embed;
 mod api_copy;
 mod api_models;
 mod api_version;
-mod api_tags;
+mod extension_bridge;
 mod error;
 
 use rocket::figment::providers::Serialized;
@@ -23,7 +23,7 @@ use api_embed::embed_model;
 use api_copy::copy_model;
 use api_models::{running_models, show_model, tags};
 use api_version::version;
-use api_tags::{handle_client_message, ExtensionBridge};
+use extension_bridge::{handle_client_message, ExtensionBridge};
 #[get("/")]
 fn index() -> &'static str {
     "Hello, world!"

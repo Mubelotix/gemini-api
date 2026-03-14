@@ -4,7 +4,7 @@ use rocket::response::stream::TextStream;
 use rocket::State;
 use serde::{Deserialize, Serialize};
 
-use crate::api_tags::{ExtensionBridge, ExtensionFile, request_gemini_generate_with_files, send_streaming_command};
+use crate::extension_bridge::{ExtensionBridge, ExtensionFile, request_gemini_generate_with_files, send_streaming_command};
 use crate::error::AppResult;
 
 #[derive(Debug, Deserialize)]
@@ -170,7 +170,7 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
             stream_rx_opt = Some(
                 send_streaming_command::<serde_json::Value>(
                     state,
-                    crate::api_tags::ExtensionCommandKind::GeminiGenerate {
+                    crate::extension_bridge::ExtensionCommandKind::GeminiGenerate {
                         prompt,
                         files,
                     },
