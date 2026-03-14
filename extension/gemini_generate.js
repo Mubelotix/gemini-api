@@ -110,7 +110,22 @@ async function extractResponseMarkdown(tabId, baselineText, currentText) {
   return extractNewContent(baselineText, currentText);
 }
 
-async function runGeminiGenerate({ prompt, onStatus, onChunk, onResult }) {
+async function waitForSendButtonEnabled(tabId, timeoutMs = 30000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const result = await sendTabMessage(tabId, { type: 'gemini-can-send' });
+    if (result?.canSend) {
+      return;
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+  }
+
+  throw new Error('Timed out waiting for Gemini send button to become enabled');
+}
+
+async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResult }) {
   let tabId = null;
 
   try {
@@ -144,6 +159,20 @@ async function runGeminiGenerate({ prompt, onStatus, onChunk, onResult }) {
     }
 
     onStatus({ state: 'gemini-generate-prompt-injected' });
+
+    if (files.length > 0) {
+      const pasteResult = await sendTabMessage(tabId, {
+        type: 'gemini-paste-files',
+        files,
+      });
+
+      if (!pasteResult?.success) {
+        throw new Error(pasteResult?.error ?? 'Failed to paste files into Gemini editor');
+      }
+
+      onStatus({ state: 'gemini-generate-files-pasted', count: files.length });
+      await waitForSendButtonEnabled(tabId);
+    }
 
     // Small pause so Angular/Quill can register the change before we click send.
     await new Promise((r) => window.setTimeout(r, 500));

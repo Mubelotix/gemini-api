@@ -4,8 +4,16 @@ use rocket::response::stream::TextStream;
 use rocket::State;
 use serde::{Deserialize, Serialize};
 
-use crate::api_tags::{ExtensionBridge, request_gemini_generate, send_streaming_command};
+use crate::api_tags::{ExtensionBridge, ExtensionFile, request_gemini_generate_with_files, send_streaming_command};
 use crate::error::AppResult;
+
+#[derive(Debug, Deserialize)]
+struct GenerateCommandChunk {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    error: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct GenerateRequest {
@@ -42,6 +50,8 @@ pub struct GenerateResponse {
     created_at: String,
     response: String,
     done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
     done_reason: String,
     total_duration: u64,
     load_duration: u64,
@@ -57,6 +67,41 @@ pub struct GenerateStreamResponse {
     created_at: String,
     response: String,
     done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn decode_image_to_file(image: String) -> ExtensionFile {
+    if let Some(payload) = image.strip_prefix("data:")
+        && let Some((meta, bytes)) = payload.split_once(',')
+    {
+        let content_type = meta
+            .split(';')
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("image/png")
+            .to_string();
+
+        return ExtensionFile {
+            bytes: bytes.to_string(),
+            content_type,
+        };
+    }
+
+    ExtensionFile {
+        bytes: image,
+        content_type: "image/png".to_string(),
+    }
+}
+
+fn normalize_files(images: Option<Vec<String>>) -> Vec<ExtensionFile> {
+    let mut normalized = Vec::new();
+
+    if let Some(images) = images {
+        normalized.extend(images.into_iter().map(decode_image_to_file));
+    }
+
+    normalized
 }
 
 #[post("/api/generate", format = "json", data = "<payload>")]
@@ -64,6 +109,7 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
     let req = payload.into_inner();
     let model = req.model;
     let prompt = req.prompt.unwrap_or_default();
+    let files = normalize_files(req.images);
     let stream_enabled = req.stream.unwrap_or(true);
     let created_at = "2026-03-13T00:00:00.000000000Z".to_string();
 
@@ -76,7 +122,10 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
             stream_rx_opt = Some(
                 send_streaming_command::<serde_json::Value>(
                     state,
-                    crate::api_tags::ExtensionCommandKind::GeminiGenerate { prompt },
+                    crate::api_tags::ExtensionCommandKind::GeminiGenerate {
+                        prompt,
+                        files,
+                    },
                 )
                 .await,
             );
@@ -85,7 +134,7 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
         }
     } else {
         let response = if model.starts_with("gemini") {
-            let text = request_gemini_generate(state, prompt)
+            let text = request_gemini_generate_with_files(state, prompt, files)
                 .await
                 .context("gemini non-stream generation failed")?;
             if text.is_empty() {
@@ -102,6 +151,7 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
             created_at: created_at.clone(),
             response,
             done: true,
+            error: None,
             done_reason: "stop".to_string(),
             total_duration: 0,
             load_duration: 0,
@@ -120,6 +170,7 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
                     created_at: created_at.clone(),
                     response: "Unsupported model".to_string(),
                     done: true,
+                    error: None,
                 };
                 if let Ok(line) = serde_json::to_string(&chunk) {
                     yield format!("{}\n", line);
@@ -130,25 +181,26 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
                 while let Some(item) = stream_rx.recv().await {
                     let chunk = match item {
                         Ok(item) => {
-                            let text = item
-                                .value
-                                .get("text")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default()
-                                .to_string();
+                            let chunk: GenerateCommandChunk = serde_json::from_value(item.value)
+                                .unwrap_or(GenerateCommandChunk {
+                                    text: String::new(),
+                                    error: Some("failed to decode extension response chunk".to_string()),
+                                });
 
                             GenerateStreamResponse {
                                 model: model.clone(),
                                 created_at: created_at.clone(),
-                                response: text,
-                                done: item.done,
+                                response: chunk.text,
+                                done: item.done || chunk.error.is_some(),
+                                error: chunk.error,
                             }
                         }
                         Err(error) => GenerateStreamResponse {
                             model: model.clone(),
                             created_at: created_at.clone(),
-                            response: format!("Gemini stream error: {}", error),
+                            response: String::new(),
                             done: true,
+                            error: Some(format!("Gemini stream error: {}", error)),
                         },
                     };
 
@@ -161,12 +213,9 @@ pub async fn generate(payload: rocket::serde::json::Json<GenerateRequest>, state
                     }
                 }
             }
-        } else {
-            if let Some(body) = non_stream_body_opt {
-                if let Ok(line) = serde_json::to_string(&body) {
-                    yield format!("{}\n", line);
-                }
-            }
+        } else if let Some(body) = non_stream_body_opt
+            && let Ok(line) = serde_json::to_string(&body) {
+            yield format!("{}\n", line);
         }
     })
 }

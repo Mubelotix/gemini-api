@@ -37,11 +37,22 @@ impl ExtensionBridge {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionFile {
+    pub bytes: String,
+    #[serde(rename = "contentType", alias = "content_type")]
+    pub content_type: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ExtensionCommandKind {
     CheckGeminiLogin,
-    GeminiGenerate { prompt: String },
+    GeminiGenerate {
+        prompt: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<ExtensionFile>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,6 +192,18 @@ impl GeminiLoginStatus {
 struct GeminiGenerateResult {
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+impl GeminiGenerateResult {
+    fn into_text_result(self) -> AnyResult<String> {
+        if let Some(error) = self.error {
+            bail!(error);
+        }
+
+        Ok(self.text)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -254,12 +277,16 @@ pub async fn handle_client_message(state: &ExtensionBridge, raw_message: &str) {
     }
 }
 
-pub async fn request_gemini_generate(state: &State<ExtensionBridge>, prompt: String) -> AnyResult<String> {
+pub async fn request_gemini_generate_with_files(
+    state: &State<ExtensionBridge>,
+    prompt: String,
+    files: Vec<ExtensionFile>,
+) -> AnyResult<String> {
     ensure_extension_connected(state)?;
 
     let mut rx = send_streaming_command::<GeminiGenerateResult>(
         state,
-        ExtensionCommandKind::GeminiGenerate { prompt },
+        ExtensionCommandKind::GeminiGenerate { prompt, files },
     )
     .await;
 
@@ -268,7 +295,12 @@ pub async fn request_gemini_generate(state: &State<ExtensionBridge>, prompt: Str
     while let Some(item) = rx.recv().await {
         match item {
             Ok(item) => {
-                output.push_str(&item.value.text);
+                output.push_str(
+                    &item
+                        .value
+                        .into_text_result()
+                        .context("gemini extension reported an error")?,
+                );
                 if item.done {
                     break;
                 }

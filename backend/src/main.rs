@@ -38,10 +38,9 @@ fn incoming_requests(ws: ws::WebSocket, bridge: &rocket::State<ExtensionBridge>)
                     outgoing = command_rx.recv() => {
                         match outgoing {
                             Ok(command) => {
-                                if let Ok(serialized) = serde_json::to_string(&command) {
-                                    if stream.send(ws::Message::Text(serialized)).await.is_err() {
-                                        break;
-                                    }
+                                if let Ok(serialized) = serde_json::to_string(&command)
+                                    && stream.send(ws::Message::Text(serialized)).await.is_err() {
+                                    break;
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(_)) => {}
