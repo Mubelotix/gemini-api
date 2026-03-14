@@ -16,3 +16,6 @@ We don't support the whole APIs we emulate.
 However, we should not return errors over usage of fields we don't implement.
 Fields with limited impact, that do not break the response, should be ignored.
 We only return errors when we know the client won't be satisfied with what we can return.
+
+When fixing an issue, you may add a unit test if relevant.
+Unit tests must not however require internet access and must not need to interact with the extension.
