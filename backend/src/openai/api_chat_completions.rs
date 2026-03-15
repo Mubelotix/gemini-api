@@ -705,13 +705,29 @@ fn normalize_tool_calls(raw_calls: &[Value], id_seed: &str) -> Vec<Value> {
 }
 
 fn find_quote_ending_value(text: &str, mut index: usize) -> Option<usize> {
+    let mut escaped = false;
+
     while let Some((offset, ch)) = text[index..].char_indices().next() {
-        if ch != '"' {
-            index += ch.len_utf8();
+        let current_index = index + offset;
+
+        if escaped {
+            escaped = false;
+            index = current_index + ch.len_utf8();
             continue;
         }
 
-        let quote_index = index + offset;
+        if ch == '\\' {
+            escaped = true;
+            index = current_index + ch.len_utf8();
+            continue;
+        }
+
+        if ch != '"' {
+            index = current_index + ch.len_utf8();
+            continue;
+        }
+
+        let quote_index = current_index;
         let mut lookahead = quote_index + 1;
 
         while let Some(next) = text[lookahead..].chars().next() {
@@ -1926,4 +1942,56 @@ mod tests {
         );
         assert!(content.is_none(), "should be tool mode with no assistant content");
     }
+
+        #[test]
+        fn parses_tool_calls_with_multiline_rust_snippet_arguments() {
+                let payload = r#"{
+    "tool_calls": [
+        {
+            "type": "function",
+            "function": {
+                "name": "replace_string_in_file",
+                "arguments": "{\"filePath\":\"/tmp/tmpproj/src/main.rs\",\"newString\":\"    #[test]\\n    fn test_fibonacci() {\\n        // ...existing code...\\n        assert_eq!(fibonacci(10), 55);\\n    }\\n\\n    #[test]\\n    fn test_cache_speedup() {\\n        use std::time::Instant;\\n\\n        let n = 30;\\n\\n        // First call: Uncached (populates the cache recursively)\\n        let start = Instant::now();\\n        let first_result = fibonacci(n);\\n        let duration_uncached = start.elapsed();\\n\\n        // Second call: Cached (should be near-instant O(1) lookup)\\n        let start = Instant::now();\\n        let second_result = fibonacci(n);\\n        let duration_cached = start.elapsed();\\n\\n        assert_eq!(first_result, second_result);\\n        \\n        println!(\\\"Uncached time: {:?}\\\", duration_uncached);\\n        println!(\\\"Cached time: {:?}\\\", duration_cached);\\n\\n        // The cached lookup should be significantly faster than recursive computation\\n        assert!(duration_cached < duration_uncached, \\\"Cache should be faster than initial computation\\\");\\n    }\\n}\",\"oldString\":\"    #[test]\\n    fn test_fibonacci() {\\n        assert_eq!(fibonacci(0), 0);\\n        assert_eq!(fibonacci(1), 1);\\n        assert_eq!(fibonacci(2), 1);\\n        assert_eq!(fibonacci(3), 2);\\n        assert_eq!(fibonacci(4), 3);\\n        assert_eq!(fibonacci(5), 5);\\n        assert_eq!(fibonacci(10), 55);\\n    }\\n}\"}"
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_in_terminal",
+                "arguments": "{\"command\":\"cargo test -- --nocapture\",\"explanation\":\"Runs the tests with stdout enabled to see the timing comparison between cached and uncached calls.\",\"goal\":\"Verify cache performance improvement\",\"isBackground\":false,\"timeout\":0}"
+            }
+        }
+    ]
+}"#;
+
+                let calls = parse_tool_calls_from_text(payload, "seed").expect("expected tool calls");
+                assert_eq!(calls.len(), 2);
+
+                let first_args = calls[0]
+                        .get("function")
+                        .and_then(Value::as_object)
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(Value::as_str)
+                        .expect("first tool arguments should be present");
+                let parsed_first_args: Value =
+                        serde_json::from_str(first_args).expect("first tool arguments should be valid JSON");
+                assert_eq!(
+                        parsed_first_args["filePath"],
+                        "/tmp/tmpproj/src/main.rs"
+                );
+                assert!(parsed_first_args["newString"]
+                        .as_str()
+                        .expect("newString must be a string")
+                        .contains("test_cache_speedup"));
+
+                let second_args = calls[1]
+                        .get("function")
+                        .and_then(Value::as_object)
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(Value::as_str)
+                        .expect("second tool arguments should be present");
+                let parsed_second_args: Value =
+                        serde_json::from_str(second_args).expect("second tool arguments should be valid JSON");
+                assert_eq!(parsed_second_args["command"], "cargo test -- --nocapture");
+        }
 }
