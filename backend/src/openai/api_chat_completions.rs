@@ -621,11 +621,11 @@ fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
     };
 
     let valid_example = r#"```json
-{"tool_calls":[{"type":"function","function":{"name":"read_file","arguments":"{\"filePath\":\"/tmp/a.txt\",\"startLine\":1,\"endLine\":10}"}}]}
+{"tool_calls":[{"type":"function","function":{"name":"read_file","arguments":"{\"filePath\":\"/tmp/a.txt\",\"startLine\":1,\"endLine\":10}"}},{"type":"function","function":{"name":"grep_search","arguments":"{\"query\":\"foo\",\"isRegexp\":false}"}}]}
 ```"#;
 
     Some(format!(
-        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\n{}\nOutput contract: choose exactly one mode.\nA) Text mode: output assistant text only, and do not output any tool-calls block.\nB) Tool mode: output exactly one fenced json code block containing \"tool_calls\" and no assistant text before or after it.\nWhen using tool mode, stop immediately after the closing ``` fence. Any content after the closing fence is discarded.\nNever output a second tool-calls block.\nRequired shape inside the code block:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
+        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\n{}\nOutput contract: choose exactly one mode.\nA) Text mode: output assistant text only, and do not output any fenced code block starting with ```json.\nB) Tool mode: output exactly one single fenced ```json block. That one block contains ALL tool calls you want to make, together, in the \"tool_calls\" array. Do not split calls across multiple blocks.\nThe opening fence MUST be three backtick characters (```) immediately followed by json — do NOT omit the backticks.\nStop writing immediately after that one closing ``` fence. Do not output any text or additional ``` blocks after it. Anything after the first closing fence is discarded.\nRequired shape inside the code block (multiple calls go in the same array):\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }},\n    {{ ...more calls if needed... }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example (two calls in one block):\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
         mode_line,
         forced_line,
         stop_wait_line,
@@ -1248,6 +1248,22 @@ fn parse_tool_calls_and_content(text: &str, id_seed: &str) -> (Vec<Value>, Optio
 
     // Enforce exclusive behavior: only treat the response as tool-calls if it starts
     // with a tool-calls payload. Any leading assistant text commits to text mode.
+
+    // Handle the common model mistake of omitting the opening backticks:
+    //   json
+    //   {"tool_calls":[...]}
+    // Strip a bare language tag on the first line and treat the rest as a fenced block.
+    let trimmed = if let Some(newline_pos) = trimmed.find('\n') {
+        let first_line = trimmed[..newline_pos].trim();
+        let rest = trimmed[newline_pos + 1..].trim_start();
+        let is_lang_tag = !first_line.is_empty()
+            && first_line.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && (rest.starts_with('{') || rest.starts_with('['));
+        if is_lang_tag { rest } else { trimmed }
+    } else {
+        trimmed
+    };
+
     if trimmed.starts_with("```") {
         if let Some((_start, _end, first_block_content)) =
             extract_fenced_block_ranges(trimmed).into_iter().next()
@@ -1848,4 +1864,18 @@ mod tests {
                 serde_json::from_str(first_arguments).expect("first arguments should be valid JSON");
             assert_eq!(parsed_first_arguments["todoList"][0]["id"], 1);
         }
+
+    #[test]
+    fn parses_tool_calls_when_opening_backticks_are_missing() {
+        // The model sometimes outputs the language tag without the opening backtick fence.
+        let payload = "json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"manage_todo_list\",\"arguments\":\"{\\\"todoList\\\":[{\\\"id\\\":1,\\\"status\\\":\\\"in-progress\\\",\\\"title\\\":\\\"Implement Fibonacci\\\"}]}\"}}]}";
+
+        let (tool_calls, content) = parse_tool_calls_and_content(payload, "seed");
+        assert_eq!(tool_calls.len(), 1, "should parse tool calls from lang-tag-without-backticks output");
+        assert_eq!(
+            tool_calls[0].get("function").and_then(Value::as_object).and_then(|f| f.get("name")).and_then(Value::as_str),
+            Some("manage_todo_list")
+        );
+        assert!(content.is_none(), "should be tool mode with no assistant content");
+    }
 }
