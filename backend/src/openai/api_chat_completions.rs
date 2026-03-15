@@ -1692,7 +1692,7 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
         non_stream_body_opt = Some(if tool_mode_active {
             let (tool_calls, content) = parse_tool_calls_and_content(&response_text, &id);
             if !tool_calls.is_empty() {
-                build_non_stream_tool_response(id.clone(), created, model.clone(), tool_calls, None)
+                build_non_stream_tool_response(id.clone(), created, model.clone(), tool_calls, content)
             } else {
                 build_non_stream_response(id.clone(), created, model.clone(), content.unwrap_or(response_text))
             }
@@ -1766,12 +1766,29 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
                     };
 
                     if !tool_calls.is_empty() {
+                        let mut emitted_role_in_tool_mode = false;
+
+                        if let Some(content) = content_opt.as_ref().filter(|c| !c.is_empty()) {
+                            let content_chunk = build_stream_chunk(
+                                id.clone(),
+                                created,
+                                model.clone(),
+                                Some(content.clone()),
+                                true,
+                                false,
+                            );
+                            if let Ok(line) = serde_json::to_string(&content_chunk) {
+                                yield format!("data: {}\n\n", line);
+                            }
+                            emitted_role_in_tool_mode = true;
+                        }
+
                         let chunk = build_stream_tool_call_chunk(
                             id.clone(),
                             created,
                             model.clone(),
                             tool_calls,
-                            true,
+                            !emitted_role_in_tool_mode,
                             true,
                         );
                         if let Ok(line) = serde_json::to_string(&chunk) {
@@ -2297,4 +2314,95 @@ mod tests {
                     Some("insert_edit_into_file")
                 );
             }
+
+    #[test]
+    fn parses_tool_calls_without_type_with_trailing_prose() {
+        let text = r#"```json
+{"tool_calls":[{"function":{"arguments":"{\"filePath\":\"/tmp/tmpproj/src/main.rs\",\"newString\":\"fn main() {}\",\"oldString\":\"fn main() {\"}","name":"replace_string_in_file"},"id":"call_add_heap_sort"},{"function":{"arguments":"{\"filePath\":\"/tmp/tmpproj/src/main.rs\",\"newString\":\"fn test() {}\",\"oldString\":\"fn test_old() {}\"}","name":"replace_string_in_file"},"id":"call_add_heap_test"},{"function":{"arguments":"{\"command\":\"cargo test compare_sorting_algorithms -- --nocapture\",\"explanation\":\"Running the benchmark again to include the new Heap Sort algorithm.\",\"goal\":\"Compare 6 sorting algorithms\",\"isBackground\":false,\"timeout\":0}","name":"run_in_terminal"},"id":"call_run_bench_6"}]}
+```
+
+I'll add **Heapsort** as the sixth algorithm."#;
+
+        let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
+        assert_eq!(tool_calls.len(), 3);
+        assert_eq!(
+            tool_calls[0]
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str),
+            Some("replace_string_in_file")
+        );
+        assert_eq!(
+            tool_calls[2]
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str),
+            Some("run_in_terminal")
+        );
+        assert!(content
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Heapsort"));
+    }
+
+    #[test]
+    fn parses_user_sample_with_tool_calls_then_prose() {
+        let text = r#"```json
+{"tool_calls":[{"function":{"arguments":"{\"filePath\":\"/tmp/tmpproj/src/main.rs\",\"newString\":\"    while r < right.len() {\\n        arr[a] = right[r].clone();\\n        r += 1;\\n        a += 1;\\n    }\\n}\\n\\nfn heap_sort<T: Ord>(arr: &mut [T]) {\\n    let len = arr.len();\\n    if len <= 1 {\\n        return;\\n    }\\n\\n    for i in (0..len / 2).rev() {\\n        sift_down(arr, i, len);\\n    }\\n\\n    for i in (1..len).rev() {\\n        arr.swap(0, i);\\n        sift_down(arr, 0, i);\\n    }\\n}\\n\\nfn sift_down<T: Ord>(arr: &mut [T], mut root: usize, end: usize) {\\n    while root * 2 + 1 < end {\\n        let mut child = root * 2 + 1;\\n        if child + 1 < end && arr[child] < arr[child + 1] {\\n            child += 1;\\n        }\\n        if arr[root] < arr[child] {\\n            arr.swap(root, child);\\n            root = child;\\n        } else {\\n            break;\\n        }\\n    }\\n}\\n\\nfn main() {\",\"oldString\":\"    while r < right.len() {\\n        arr[a] = right[r].clone();\\n        r += 1;\\n        a += 1;\\n    }\\n}\\n\\nfn main() {\"}","name":"replace_string_in_file"},"id":"call_add_heap_sort"},{"function":{"arguments":"{\"filePath\":\"/tmp/tmpproj/src/main.rs\",\"newString\":\"        let start = Instant::now();\\n        merge_sort(&mut arr);\\n        let duration = start.elapsed();\\n        println!(\\\"Merge Sort:     {:?}\\\", duration);\\n        assert!(is_sorted(&arr));\\n\\n        // Heap Sort\\n        let mut arr = original_arr.clone();\\n        let start = Instant::now();\\n        heap_sort(&mut arr);\\n        let duration = start.elapsed();\\n        println!(\\\"Heap Sort:      {:?}\\\", duration);\\n        assert!(is_sorted(&arr));\\n    }\\n\",\"oldString\":\"        let start = Instant::now();\\n        merge_sort(&mut arr);\\n        let duration = start.elapsed();\\n        println!(\\\"Merge Sort:     {:?}\\\", duration);\\n        assert!(is_sorted(&arr));\\n    }\\n\"}","name":"replace_string_in_file"},"id":"call_add_heap_test"},{"function":{"arguments":"{\"command\":\"cargo test compare_sorting_algorithms -- --nocapture\",\"explanation\":\"Running the benchmark again to include the new Heap Sort algorithm.\",\"goal\":\"Compare 6 sorting algorithms\",\"isBackground\":false,\"timeout\":0}","name":"run_in_terminal"},"id":"call_run_bench_6"}]}
+```
+
+I'll add **Heapsort** as the sixth algorithm."#;
+
+        let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
+        assert_eq!(tool_calls.len(), 3);
+        assert_eq!(
+            tool_calls[0]
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str),
+            Some("replace_string_in_file")
+        );
+        assert_eq!(
+            tool_calls[2]
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str),
+            Some("run_in_terminal")
+        );
+
+        let content = content.expect("content should contain trailing prose");
+        assert!(content.contains("Heapsort"));
+    }
+
+    #[test]
+    fn non_stream_tool_response_can_include_content() {
+        let response = build_non_stream_tool_response(
+            "chatcmpl-test".to_string(),
+            0,
+            "gemini-2.5-pro".to_string(),
+            vec![serde_json::json!({
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "run_in_terminal",
+                    "arguments": "{\"command\":\"echo hi\"}",
+                }
+            })],
+            Some("I'll run it now.".to_string()),
+        );
+
+        assert_eq!(
+            response.choices[0]
+                .message
+                .content
+                .as_deref(),
+            Some("I'll run it now.")
+        );
+        assert_eq!(response.choices[0].finish_reason, "tool_calls");
+        assert!(response.choices[0].message.tool_calls.is_some());
+    }
 }
