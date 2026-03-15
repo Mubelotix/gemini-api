@@ -1262,14 +1262,11 @@ fn parse_tool_calls_and_content(text: &str, id_seed: &str) -> (Vec<Value>, Optio
         return (Vec::new(), None);
     }
 
-    // Enforce exclusive behavior: only treat the response as tool-calls if it starts
-    // with a tool-calls payload. Any leading assistant text commits to text mode.
-
     // Handle the common model mistake of omitting the opening backticks:
     //   json
     //   {"tool_calls":[...]}
     // Strip a bare language tag on the first line and treat the rest as a fenced block.
-    let trimmed = if let Some(newline_pos) = trimmed.find('\n') {
+    let normalized = if let Some(newline_pos) = trimmed.find('\n') {
         let first_line = trimmed[..newline_pos].trim();
         let rest = trimmed[newline_pos + 1..].trim_start();
         let is_lang_tag = !first_line.is_empty()
@@ -1280,43 +1277,109 @@ fn parse_tool_calls_and_content(text: &str, id_seed: &str) -> (Vec<Value>, Optio
         trimmed
     };
 
-    if trimmed.starts_with("```") {
-        if let Some((_start, _end, first_block_content)) =
-            extract_fenced_block_ranges(trimmed).into_iter().next()
-        {
-            let sanitized = sanitize_malformed_tool_arguments_json(&first_block_content);
-            for candidate in [sanitized.as_str(), first_block_content.as_str()] {
-                let repaired = repair_incomplete_json(candidate);
-                let parsed = serde_json::from_str::<Value>(&repaired).ok().or_else(|| {
-                    let mut des = serde_json::Deserializer::from_str(&repaired);
-                    Value::deserialize(&mut des).ok()
-                });
+    let mut all_tool_calls = Vec::new();
+    let mut kept_text_parts = Vec::new();
+    let mut cursor = 0usize;
 
-                if let Some(parsed) = parsed
-                    && let Some(arr) = parsed
-                        .as_object()
-                        .and_then(|o| o.get("tool_calls"))
-                        .and_then(Value::as_array)
-                        .cloned()
-                {
-                    let normalized = normalize_tool_calls(&arr, id_seed);
-                    if !normalized.is_empty() {
-                        return (normalized, None);
-                    }
-                }
-            }
+    for (block_index, (start, end, content)) in extract_fenced_block_ranges(normalized)
+        .into_iter()
+        .enumerate()
+    {
+        if start > cursor {
+            kept_text_parts.push(normalized[cursor..start].to_string());
         }
-        return (Vec::new(), Some(trimmed.to_string()));
+
+        if let Some(tool_calls) = parse_tool_calls_from_text(
+            &content,
+            &format!("{}_fenced_{}", id_seed, block_index),
+        )
+            && !tool_calls.is_empty()
+        {
+            all_tool_calls.extend(tool_calls);
+        } else {
+            kept_text_parts.push(normalized[start..end].to_string());
+        }
+
+        cursor = end;
     }
 
-    if (trimmed.starts_with('{') || trimmed.starts_with('['))
-        && let Some(tool_calls) = parse_tool_calls_from_text(trimmed, id_seed)
+    if cursor < normalized.len() {
+        kept_text_parts.push(normalized[cursor..].to_string());
+    }
+
+    let combined_kept_text = kept_text_parts.join("");
+
+    if let Some((start, end, tool_calls)) = find_inline_tool_payload_range(
+        combined_kept_text.as_str(),
+        &format!("{}_inline", id_seed),
+    )
         && !tool_calls.is_empty()
     {
-        return (tool_calls, None);
+        all_tool_calls.extend(tool_calls);
+
+        let mut without_inline_tool_json = String::new();
+        without_inline_tool_json.push_str(&combined_kept_text[..start]);
+        without_inline_tool_json.push_str(&combined_kept_text[end..]);
+
+        let content = without_inline_tool_json.trim();
+        return (
+            all_tool_calls,
+            if content.is_empty() {
+                None
+            } else {
+                Some(content.to_string())
+            },
+        );
     }
 
-    (Vec::new(), Some(trimmed.to_string()))
+    if !all_tool_calls.is_empty() {
+        let content = combined_kept_text.trim();
+        return (
+            all_tool_calls,
+            if content.is_empty() {
+                None
+            } else {
+                Some(content.to_string())
+            },
+        );
+    }
+
+    let content = normalized.trim();
+    (
+        Vec::new(),
+        if content.is_empty() {
+            None
+        } else {
+            Some(content.to_string())
+        },
+    )
+}
+
+fn find_inline_tool_payload_range(text: &str, id_seed: &str) -> Option<(usize, usize, Vec<Value>)> {
+    for (index, ch) in text.char_indices() {
+        let close = match ch {
+            '{' => find_matching_delimiter(text, index, '{', '}'),
+            '[' => find_matching_delimiter(text, index, '[', ']'),
+            _ => None,
+        };
+
+        let Some(end_index) = close else {
+            continue;
+        };
+
+        let candidate = &text[index..=end_index];
+        let seed = format!("{}_{}", id_seed, index);
+        let Some(tool_calls) = parse_tool_calls_from_text(candidate, &seed) else {
+            continue;
+        };
+        if tool_calls.is_empty() {
+            continue;
+        }
+
+        return Some((index, end_index + 1, tool_calls));
+    }
+
+    None
 }
 
 fn select_effective_tools_for_prompt(behavior: &ToolBehavior) -> Vec<Value> {
@@ -1828,15 +1891,15 @@ mod tests {
             }
 
     #[test]
-    fn treats_text_then_tool_block_as_text_mode() {
+    fn parses_tool_calls_when_text_precedes_tool_block_and_keeps_text() {
         let text = "Let me look at the workspace first.\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"gemini-ollama\\\"}\"}}]}\n```";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
-        assert!(tool_calls.is_empty(), "tool calls must be ignored after leading text");
+        assert_eq!(tool_calls.len(), 1, "tool calls should be parsed even after leading text");
 
         let content = content.expect("content should be present");
         assert!(content.contains("Let me look"), "content should contain prefix text");
-        assert!(content.contains("tool_calls"), "content should preserve full text output");
+        assert!(!content.contains("tool_calls"), "tool block should be removed from assistant content");
     }
 
     #[test]
@@ -1850,23 +1913,24 @@ mod tests {
             Some("grep_search")
         );
 
-        assert!(content.is_none(), "tool mode should not return assistant content");
+        assert_eq!(content.as_deref(), Some("Ignore this trailing output"));
     }
 
     #[test]
-    fn treats_text_then_multiple_tool_blocks_as_text_mode() {
+    fn parses_tool_calls_from_multiple_blocks_and_keeps_text() {
         let text = "Starting search.\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\n\nAlso reading files:\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"filePath\\\":\\\"/tmp/a.txt\\\",\\\"startLine\\\":1,\\\"endLine\\\":10}\"}}]}\n```";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
-        assert!(tool_calls.is_empty(), "tool calls must be ignored after leading text");
+        assert_eq!(tool_calls.len(), 2, "tool calls from multiple blocks should be merged");
 
         let content = content.expect("content should be present");
         assert!(content.contains("Starting search"));
         assert!(content.contains("Also reading files"));
+        assert!(!content.contains("tool_calls"));
     }
 
     #[test]
-    fn discards_trailing_text_after_leading_tool_call_block() {
+    fn keeps_trailing_text_after_leading_tool_call_block() {
         let text = "```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\nIgnore this trailing output";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
@@ -1876,11 +1940,11 @@ mod tests {
             Some("grep_search")
         );
 
-        assert!(content.is_none(), "trailing text must be discarded in tool mode");
+        assert_eq!(content.as_deref(), Some("Ignore this trailing output"));
     }
 
     #[test]
-    fn discards_trailing_fenced_block_after_leading_tool_calls_json_block() {
+    fn keeps_non_tool_fenced_block_after_leading_tool_calls_json_block() {
         let text = "```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\n\n```json\n{\"note\":\"this must be ignored\"}\n```";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
@@ -1890,7 +1954,26 @@ mod tests {
             Some("grep_search")
         );
 
-        assert!(content.is_none(), "trailing fenced blocks must be discarded in tool mode");
+        let content = content.expect("content should be present");
+        assert!(content.contains("this must be ignored"));
+    }
+
+    #[test]
+    fn parses_inline_tool_json_surrounded_by_text_and_keeps_edges() {
+        let text = "Before the call {\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"query\\\":\\\"foo\\\",\\\"isRegexp\\\":false}\"}}]} after the call";
+
+        let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(
+            tool_calls[0]
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str),
+            Some("grep_search")
+        );
+
+        assert_eq!(content.as_deref(), Some("Before the call  after the call"));
     }
 
         #[test]
