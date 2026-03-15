@@ -1253,7 +1253,202 @@ fn parse_tool_calls_from_text(text: &str, id_seed: &str) -> Option<Vec<Value>> {
         }
     }
 
+    for source in [sanitized.as_str(), text] {
+        let recovered = recover_tool_calls_from_broken_array(source, id_seed);
+        if !recovered.is_empty() {
+            return Some(recovered);
+        }
+    }
+
     None
+}
+
+fn recover_tool_calls_from_broken_array(text: &str, id_seed: &str) -> Vec<Value> {
+    let mut recovered = Vec::new();
+
+    for (index, object_slice) in extract_tool_call_object_slices(text).into_iter().enumerate() {
+        if let Some(call) = parse_tool_call_object_with_fallback(&object_slice, id_seed, index) {
+            recovered.push(call);
+        }
+    }
+
+    recovered
+}
+
+fn extract_tool_call_object_slices(text: &str) -> Vec<String> {
+    let mut slices = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(found_rel) = text[cursor..].find("\"tool_calls\"") {
+        let tool_calls_index = cursor + found_rel;
+        let Some(array_rel) = text[tool_calls_index..].find('[') else {
+            break;
+        };
+        let array_start = tool_calls_index + array_rel;
+
+        let mut index = array_start + 1;
+        while index < text.len() {
+            let Some(ch) = text[index..].chars().next() else {
+                break;
+            };
+
+            if ch.is_whitespace() || ch == ',' {
+                index += ch.len_utf8();
+                continue;
+            }
+
+            if ch == ']' {
+                cursor = index + 1;
+                break;
+            }
+
+            if ch != '{' {
+                index += ch.len_utf8();
+                continue;
+            }
+
+            let Some(end) = find_matching_delimiter(text, index, '{', '}') else {
+                // Broken/truncated tail: keep already recovered complete objects.
+                return slices;
+            };
+
+            slices.push(text[index..=end].to_string());
+            index = end + 1;
+        }
+
+        if cursor <= tool_calls_index {
+            break;
+        }
+    }
+
+    slices
+}
+
+fn parse_tool_call_object_with_fallback(object_text: &str, id_seed: &str, index: usize) -> Option<Value> {
+    let normalized_from_json = {
+        let sanitized = sanitize_malformed_tool_arguments_json(object_text);
+        let repaired = repair_incomplete_json(&sanitized);
+        serde_json::from_str::<Value>(&repaired)
+            .ok()
+            .and_then(|parsed| normalize_tool_calls(&[parsed], id_seed).into_iter().next())
+    };
+
+    if normalized_from_json.is_some() {
+        return normalized_from_json;
+    }
+
+    let call_type = extract_quoted_value_for_key(object_text, "type")
+        .unwrap_or_else(|| "function".to_string());
+
+    if call_type == "custom" {
+        let name = extract_quoted_value_for_key(object_text, "name")?;
+        let input = extract_quoted_value_for_key(object_text, "input")
+            .map(Value::String)
+            .unwrap_or_else(|| Value::String(String::new()));
+        let call_id = extract_quoted_value_for_key(object_text, "id")
+            .unwrap_or_else(|| format!("call_{}_{}", id_seed, index));
+
+        return Some(serde_json::json!({
+            "id": call_id,
+            "type": "custom",
+            "custom": {
+                "name": name,
+                "input": input,
+            }
+        }));
+    }
+
+    let name = extract_quoted_value_for_key(object_text, "name")?;
+    let arguments_raw = extract_quoted_value_for_key(object_text, "arguments")
+        .unwrap_or_else(|| "{}".to_string());
+    let call_id = extract_quoted_value_for_key(object_text, "id")
+        .unwrap_or_else(|| format!("call_{}_{}", id_seed, index));
+
+    Some(serde_json::json!({
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": normalize_arguments_string(&arguments_raw),
+        }
+    }))
+}
+
+fn extract_quoted_value_for_key(text: &str, key: &str) -> Option<String> {
+    let key_pattern = format!("\"{}\"", key);
+    let mut cursor = 0usize;
+
+    while let Some(found_rel) = text[cursor..].find(&key_pattern) {
+        let key_index = cursor + found_rel;
+        let mut value_index = key_index + key_pattern.len();
+
+        while let Some(ch) = text[value_index..].chars().next() {
+            if ch.is_whitespace() {
+                value_index += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        if !text[value_index..].starts_with(':') {
+            cursor = key_index + key_pattern.len();
+            continue;
+        }
+        value_index += 1;
+
+        while let Some(ch) = text[value_index..].chars().next() {
+            if ch.is_whitespace() {
+                value_index += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        if !text[value_index..].starts_with('"') {
+            cursor = key_index + key_pattern.len();
+            continue;
+        }
+
+        if let Some((value, _end_index)) = parse_json_string_at(text, value_index) {
+            return Some(value);
+        }
+
+        cursor = value_index + 1;
+    }
+
+    None
+}
+
+fn parse_json_string_at(text: &str, quote_index: usize) -> Option<(String, usize)> {
+    if !text[quote_index..].starts_with('"') {
+        return None;
+    }
+
+    let mut escaped = false;
+    let mut end_index = None;
+
+    for (rel, ch) in text[quote_index + 1..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            end_index = Some(quote_index + 1 + rel);
+            break;
+        }
+    }
+
+    let end = end_index?;
+    let raw = &text[quote_index..=end];
+    let decoded = serde_json::from_str::<String>(raw)
+        .ok()
+        .or_else(|| raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')).map(ToString::to_string))?;
+
+    Some((decoded, end + 1))
 }
 
 fn parse_tool_calls_and_content(text: &str, id_seed: &str) -> (Vec<Value>, Option<String>) {
@@ -2077,4 +2272,29 @@ mod tests {
                         serde_json::from_str(second_args).expect("second tool arguments should be valid JSON");
                 assert_eq!(parsed_second_args["command"], "cargo test -- --nocapture");
         }
+
+            #[test]
+            fn recovers_complete_tool_calls_from_truncated_tool_calls_array_tail() {
+                let payload = r#"{"tool_calls":[{"type":"function","function":{"name":"insert_edit_into_file","arguments":"{\"filePath\":\"/tmp/tmpproj/src/main.rs\",\"code\":\"fn a() {}\"}"}},{"type":"function","function":{"name":"insert_edit_into_file","arguments":"{\"filePath\":\"/tmp/tmpproj/src/main.rs\",\"code\":\"fn b() {}\"}"}},{"type":"function","function":{"name":"run_in_terminal","arguments":"{\"command\":\"cargo test -- --nocapture\""}"#;
+
+                let calls = parse_tool_calls_from_text(payload, "seed").expect("expected recovered tool calls");
+                assert!(calls.len() >= 2, "should recover at least complete calls before truncated tail");
+
+                assert_eq!(
+                    calls[0]
+                        .get("function")
+                        .and_then(Value::as_object)
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str),
+                    Some("insert_edit_into_file")
+                );
+                assert_eq!(
+                    calls[1]
+                        .get("function")
+                        .and_then(Value::as_object)
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str),
+                    Some("insert_edit_into_file")
+                );
+            }
 }
