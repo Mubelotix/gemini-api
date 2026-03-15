@@ -12,6 +12,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+const COMMAND_TIMEOUT_SECS: u64 = 300;
+const STREAMING_IDLE_TIMEOUT_SECS: u64 = 300;
+
 #[derive(Debug)]
 pub(crate) struct BridgeMessage {
     done: bool,
@@ -90,13 +93,16 @@ pub async fn send_command<R: DeserializeOwned>(state: &State<ExtensionBridge>, k
         .send(command)
         .context("failed to send command to extension")?;
 
-    match timeout(Duration::from_secs(120), rx.recv()).await {
+    match timeout(Duration::from_secs(COMMAND_TIMEOUT_SECS), rx.recv()).await {
         Ok(Some(response)) => serde_json::from_value(response.payload)
             .context("failed to parse command response"),
         Ok(None) => Err(anyhow!("response channel closed before receiving a value")),
         Err(_) => {
             state.receivers.lock().await.remove(&request_id);
-            Err(anyhow!("command timed out after 120s"))
+            Err(anyhow!(
+                "command timed out after {}s",
+                COMMAND_TIMEOUT_SECS
+            ))
         }
     }
 }
@@ -126,7 +132,7 @@ pub async fn send_streaming_command<R: DeserializeOwned + Send + 'static>(state:
 
     spawn(async move {
         loop {
-            match timeout(Duration::from_secs(120), rx.recv()).await {
+            match timeout(Duration::from_secs(STREAMING_IDLE_TIMEOUT_SECS), rx.recv()).await {
                 Ok(Some(response)) => match serde_json::from_value(response.payload) {
                     Ok(parsed) => {
                         let done = response.done;
@@ -153,7 +159,10 @@ pub async fn send_streaming_command<R: DeserializeOwned + Send + 'static>(state:
                     break;
                 }
                 Err(_) => {
-                    let _ = response_tx.send(Err(anyhow!("streaming command timed out after 120s")));
+                    let _ = response_tx.send(Err(anyhow!(
+                        "streaming command timed out after {}s",
+                        STREAMING_IDLE_TIMEOUT_SECS
+                    )));
                     break;
                 }
             }
