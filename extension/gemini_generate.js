@@ -1,5 +1,7 @@
 // Sends a single tab message and resolves with the response.
 const widgetMarkerUrl = 'http://googleusercontent.com/immersive_entry_chip/0';
+// Tab registry helpers (geminiTabRegistry, computePromptHashes, findReusableTab,
+// stripMatchedMessages, pruneExpiredTabs) are defined in gemini_tab_registry.js.
 
 function createWidgetMarkerError(source) {
   const error = new Error(`Debug halt: detected Gemini immersive widget marker (${widgetMarkerUrl}) in ${source}`);
@@ -23,9 +25,12 @@ function sendTabMessage(tabId, message) {
 }
 
 // Polls response markdown and stop-button state until Gemini finishes responding.
-async function waitForGeminiResponse(tabId, baselineResponse, timeoutMs = 120000, onChunk) {
+// streamBaseline controls the starting point for incremental chunk emission.
+// Pass null for reused tabs so the new response is streamed from scratch instead
+// of being compared against the previous turn's text (which has no prefix relation).
+async function waitForGeminiResponse(tabId, baselineResponse, timeoutMs = 120000, onChunk, streamBaseline = baselineResponse) {
   const start = Date.now();
-  let lastEmittedResponse = baselineResponse ?? '';
+  let lastEmittedResponse = streamBaseline ?? '';
   const POLL_INTERVAL_MS = 1000;
   let prevIsTyping = null;
   let tick = 0;
@@ -137,24 +142,56 @@ async function waitForSendButtonEnabled(tabId, timeoutMs = 30000) {
 async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResult }) {
   let tabId = null;
   let keepTabOpenForDebug = false;
+  let isReusedTab = false;
+
+  pruneExpiredTabs();
+  const requestHashes = computePromptHashes(prompt);
+  const reuse = findReusableTab(requestHashes);
+
+  console.log('[gemini-proxy-extension] gemini-generate request hashes', {
+    hashCount: requestHashes.length,
+  });
 
   try {
     onStatus({ state: 'gemini-generate-started' });
 
-    const tab = await window.createGeminiTab('https://gemini.google.com/app');
+    let effectivePrompt = prompt;
+    let effectiveFiles = files;
 
-    tabId = tab.id;
+    if (reuse) {
+      // Reuse an existing conversation tab by injecting only the new messages.
+      tabId = reuse.tabId;
+      isReusedTab = true;
+      const entry = geminiTabRegistry.get(tabId);
+      entry.generating = true;
+      entry.lastUsedAt = Date.now();
+      const stripped = stripMatchedMessages(prompt, files, reuse.matchCount);
+      effectivePrompt = stripped.prompt;
+      effectiveFiles = stripped.files;
+      console.log('[gemini-proxy-extension] reusing gemini tab', tabId, {
+        stripped: reuse.matchCount,
+        remaining: requestHashes.length - reuse.matchCount,
+      });
+    } else {
+      // Open a fresh Gemini tab and wait for the SPA to finish loading.
+      console.log('[gemini-proxy-extension] no reusable tab found, opening new tab');
+      await ensureTabCapacityForNewConversation();
 
-    // waitForTabLoad is defined in gemini_tabs.js.
-    await waitForTabLoad(tabId);
+      const tab = await window.createGeminiTab('https://gemini.google.com/app');
+      tabId = tab.id;
+      geminiTabRegistry.set(tabId, { generating: true, messageHashes: [], lastUsedAt: Date.now() });
 
-    // Extra delay for the Gemini SPA to finish rendering its editor.
-    await new Promise((r) => window.setTimeout(r, 3000));
+      // waitForTabLoad is defined in gemini_tabs.js.
+      await waitForTabLoad(tabId);
 
-    // Inject the prompt into the Quill editor.
+      // Extra delay for the Gemini SPA to finish rendering its editor.
+      await new Promise((r) => window.setTimeout(r, 3000));
+    }
+
+    // Inject the (possibly stripped) prompt into the Quill editor.
     const injectResult = await sendTabMessage(tabId, {
       type: 'gemini-inject-prompt',
-      prompt,
+      prompt: effectivePrompt,
     });
 
     if (!injectResult?.success) {
@@ -163,24 +200,28 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
 
     onStatus({ state: 'gemini-generate-prompt-injected' });
 
-    if (files.length > 0) {
+    if (effectiveFiles.length > 0) {
       const pasteResult = await sendTabMessage(tabId, {
         type: 'gemini-paste-files',
-        files,
+        files: effectiveFiles,
       });
 
       if (!pasteResult?.success) {
         throw new Error(pasteResult?.error ?? 'Failed to paste files into Gemini editor');
       }
 
-      onStatus({ state: 'gemini-generate-files-pasted', count: files.length });
+      onStatus({ state: 'gemini-generate-files-pasted', count: effectiveFiles.length });
       await waitForSendButtonEnabled(tabId);
     }
 
     // Small pause so Angular/Quill can register the change before we click send.
     await new Promise((r) => window.setTimeout(r, 500));
 
-    // Snapshot the latest markdown BEFORE clicking send so we can detect new output.
+    // Snapshot the last response BEFORE clicking send. For a reused tab this is
+    // the previous turn's response; for a new tab it is null. It is used both as
+    // the completion sentinel (new response ≠ baseline) and, for new tabs only,
+    // as the streaming start point. Reused tabs stream from '' so the new
+    // response is emitted as fresh incremental chunks.
     const baselineResponse = await tryExtractResponseMarkdown(tabId);
 
     // Click the send button.
@@ -193,12 +234,28 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
     onStatus({ state: 'gemini-generate-sent' });
 
     // Poll until response is complete.
-    const responseText = await waitForGeminiResponse(tabId, baselineResponse, 120000, onChunk);
+    const responseText = await waitForGeminiResponse(
+      tabId,
+      baselineResponse,
+      120000,
+      onChunk,
+      isReusedTab ? null : baselineResponse,
+    );
     if (containsWidgetMarker(responseText)) {
       throw createWidgetMarkerError('final response text');
     }
 
     console.log('[gemini-proxy-extension] gemini generate response', responseText);
+
+    // Mark the tab as idle and record the full request hashes so future requests
+    // with a matching prefix can reuse this conversation.
+    const entry = geminiTabRegistry.get(tabId);
+    if (entry) {
+      entry.generating = false;
+      entry.messageHashes = requestHashes;
+      entry.lastUsedAt = Date.now();
+    }
+
     onResult({ text: responseText });
 
   } catch (error) {
@@ -215,12 +272,30 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       });
     }
 
+    // Ensure the tab is no longer marked as generating so it can be reused or
+    // cleaned up by the next pruneExpiredTabs() call.
+    if (tabId !== null) {
+      const entry = geminiTabRegistry.get(tabId);
+      if (entry) entry.generating = false;
+    }
+
     onStatus({ state: 'gemini-generate-error', error: String(error) });
     onResult({ text: '', error: String(error) });
   } finally {
-    if (tabId !== null && !keepTabOpenForDebug) {
-      chrome.tabs.remove(tabId).catch(() => {});
+    if (keepTabOpenForDebug && tabId !== null) {
+      // Tab left open intentionally for debugging; remove from registry so it
+      // is not reused in a broken state.
+      geminiTabRegistry.delete(tabId);
+    } else if (!isReusedTab && tabId !== null) {
+      // New tab: keep it open only if generation succeeded (entry has hashes).
+      // On failure the entry is empty; close the tab and clean up the registry.
+      const entry = geminiTabRegistry.get(tabId);
+      if (!entry || entry.messageHashes.length === 0) {
+        geminiTabRegistry.delete(tabId);
+        chrome.tabs.remove(tabId).catch(() => {});
+      }
     }
+    // Reused tabs are always kept open (idle) for future reuse.
   }
 }
 
