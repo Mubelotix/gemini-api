@@ -12,8 +12,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const COMMAND_TIMEOUT_SECS: u64 = 300;
-const STREAMING_IDLE_TIMEOUT_SECS: u64 = 300;
+const COMMAND_TIMEOUT_SECS: u64 = 1200;
+const STREAMING_IDLE_TIMEOUT_SECS: u64 = 1200;
 
 #[derive(Debug)]
 pub(crate) struct BridgeMessage {

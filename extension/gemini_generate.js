@@ -1,5 +1,6 @@
 // Sends a single tab message and resolves with the response.
 const widgetMarkerUrl = 'http://googleusercontent.com/immersive_entry_chip/0';
+const GEMINI_RESPONSE_TIMEOUT_MS = 20 * 60 * 1000;
 // Tab registry helpers (geminiTabRegistry, computePromptHashes, findReusableTab,
 // stripMatchedMessages, pruneExpiredTabs) are defined in gemini_tab_registry.js.
 
@@ -28,7 +29,7 @@ function sendTabMessage(tabId, message) {
 // streamBaseline controls the starting point for incremental chunk emission.
 // Pass null for reused tabs so the new response is streamed from scratch instead
 // of being compared against the previous turn's text (which has no prefix relation).
-async function waitForGeminiResponse(tabId, baselineResponse, timeoutMs = 120000, onChunk, streamBaseline = baselineResponse) {
+async function waitForGeminiResponse(tabId, baselineResponse, timeoutMs = GEMINI_RESPONSE_TIMEOUT_MS, onChunk, streamBaseline = baselineResponse) {
   const start = Date.now();
   let lastEmittedResponse = streamBaseline ?? '';
   const POLL_INTERVAL_MS = 1000;
@@ -237,7 +238,7 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
     const responseText = await waitForGeminiResponse(
       tabId,
       baselineResponse,
-      120000,
+      GEMINI_RESPONSE_TIMEOUT_MS,
       onChunk,
       isReusedTab ? null : baselineResponse,
     );
