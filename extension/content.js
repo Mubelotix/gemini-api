@@ -59,6 +59,97 @@ function extractCodeBlockMarkdown(codeBlockEl) {
 	return '```' + language + '\n' + body + '\n```\n\n';
 }
 
+function normalizeTableCellMarkdown(value) {
+	return String(value ?? '')
+		.trim()
+		.replace(/\s*\n\s*/g, '<br>')
+		.replace(/\|/g, '\\|');
+}
+
+function extractTableRows(tableEl) {
+	const rows = [];
+	for (const child of Array.from(tableEl.children)) {
+		const tag = child.tagName.toLowerCase();
+		if (tag === 'tr') {
+			rows.push(child);
+			continue;
+		}
+		if (tag !== 'thead' && tag !== 'tbody' && tag !== 'tfoot') {
+			continue;
+		}
+
+		for (const sectionChild of Array.from(child.children)) {
+			if (sectionChild.tagName.toLowerCase() === 'tr') {
+				rows.push(sectionChild);
+			}
+		}
+	}
+
+	return rows;
+}
+
+function extractRowCells(trEl) {
+	return Array.from(trEl.children).filter((cellEl) => {
+		const tag = cellEl.tagName.toLowerCase();
+		return tag === 'td' || tag === 'th';
+	});
+}
+
+function extractTableMarkdown(tableEl) {
+	const rows = extractTableRows(tableEl);
+	if (!rows.length) {
+		return '';
+	}
+
+	const thead = Array.from(tableEl.children).find(
+		(el) => el.tagName.toLowerCase() === 'thead',
+	);
+	let headerRow = null;
+	if (thead) {
+		headerRow = Array.from(thead.children).find((el) => el.tagName.toLowerCase() === 'tr') ?? null;
+	}
+	if (!headerRow) {
+		headerRow = rows.find((trEl) => extractRowCells(trEl).length > 0) ?? null;
+	}
+	if (!headerRow) {
+		return '';
+	}
+
+	const headerCells = extractRowCells(headerRow)
+		.map((cellEl) => normalizeTableCellMarkdown(domToMarkdown(cellEl)))
+		.filter((cellText) => cellText.length > 0);
+	if (!headerCells.length) {
+		return '';
+	}
+
+	const columnCount = headerCells.length;
+	const markdownRows = [];
+	markdownRows.push('| ' + headerCells.join(' | ') + ' |');
+	markdownRows.push('| ' + Array(columnCount).fill('---').join(' | ') + ' |');
+
+	for (const row of rows) {
+		if (row === headerRow) {
+			continue;
+		}
+
+		const rowCells = extractRowCells(row);
+		if (!rowCells.length) {
+			continue;
+		}
+
+		const values = rowCells
+			.slice(0, columnCount)
+			.map((cellEl) => normalizeTableCellMarkdown(domToMarkdown(cellEl)));
+		while (values.length < columnCount) {
+			values.push('');
+		}
+
+		markdownRows.push('| ' + values.join(' | ') + ' |');
+	}
+
+	return markdownRows.join('\n') + '\n\n';
+}
+
 function domToMarkdown(node) {
 	if (node.nodeType === Node.TEXT_NODE) {
 		return node.textContent;
@@ -73,6 +164,12 @@ function domToMarkdown(node) {
 	switch (tag) {
 		case 'code-block':
 			return extractCodeBlockMarkdown(node);
+		case 'table-block': {
+			const tableEl = node.querySelector('table');
+			return tableEl ? extractTableMarkdown(tableEl) : childMd();
+		}
+		case 'table':
+			return extractTableMarkdown(node);
 		case 'p':      return childMd().trim() + '\n\n';
 		case 'h1':     return '# '      + childMd().trim() + '\n\n';
 		case 'h2':     return '## '     + childMd().trim() + '\n\n';
@@ -108,6 +205,9 @@ function domToMarkdown(node) {
 		case 'a':   return '[' + childMd() + '](' + (node.getAttribute('href') ?? '') + ')';
 		case 'hr':  return '\n---\n\n';
 		case 'br':  return '\n';
+		case 'button':
+		case 'mat-icon':
+			return '';
 		default:    return childMd();
 	}
 }
