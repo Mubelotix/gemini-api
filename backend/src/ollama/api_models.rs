@@ -113,7 +113,9 @@ impl ModelCatalogEntry {
 }
 
 fn context_length_for_sign_in(sign_in_present: Option<bool>) -> u64 {
-    if matches!(sign_in_present, Some(true)) {
+    // Extension reports whether a "Sign in" prompt is visible.
+    // prompt visible => signed out; prompt not visible => signed in.
+    if matches!(sign_in_present, Some(false)) {
         SIGNED_IN_INPUT_CONTEXT_LENGTH
     } else {
         SIGNED_OUT_INPUT_CONTEXT_LENGTH
