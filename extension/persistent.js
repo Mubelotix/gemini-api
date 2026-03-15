@@ -1,9 +1,42 @@
 const websocketUrl = 'ws://host.docker.internal:1111/incoming-requests';
+const widgetMarkerUrl2 = 'http://googleusercontent.com/immersive_entry_chip/0';
 
 const reconnectDelayMs = 1000;
 const imagePreviewLifetimeMs = 5000;
 let websocket = null;
 let reconnectTimer = null;
+let extensionDebugHalted = false;
+
+function containsWidgetMarker(text) {
+  return String(text ?? '').includes(widgetMarkerUrl2);
+}
+
+function haltExtensionForWidgetDebug(reasonPayload) {
+  if (extensionDebugHalted) {
+    return;
+  }
+
+  extensionDebugHalted = true;
+  sendToBackground('ws-status', {
+    state: 'debug-halt-widget-detected',
+    markerUrl: widgetMarkerUrl2,
+    ...reasonPayload,
+  });
+
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  if (websocket && websocket.readyState === WebSocket.OPEN) {
+    websocket.close(4000, 'debug-halt-widget-detected');
+  }
+
+  console.error('[gemini-proxy-extension] debug halt active: immersive widget marker detected', {
+    markerUrl: widgetMarkerUrl2,
+    reasonPayload,
+  });
+}
 
 function ensurePreviewContainer() {
   let container = document.getElementById('debug-image-previews');
@@ -231,6 +264,10 @@ function sendToBackground(type, payload) {
 }
 
 function scheduleReconnect() {
+  if (extensionDebugHalted) {
+    return;
+  }
+
   if (reconnectTimer !== null) {
     return;
   }
@@ -242,6 +279,14 @@ function scheduleReconnect() {
 }
 
 function connectWebSocket() {
+  if (extensionDebugHalted) {
+    sendToBackground('ws-status', {
+      state: 'debug-halt-active',
+      markerUrl: widgetMarkerUrl2,
+    });
+    return;
+  }
+
   const url = websocketUrl;
 
   sendToBackground('ws-status', { state: 'connecting', url });
@@ -276,6 +321,14 @@ function connectWebSocket() {
 }
 
 function handleBackendMessage(rawData) {
+  if (extensionDebugHalted) {
+    sendToBackground('ws-status', {
+      state: 'debug-halt-ignore-backend-message',
+      markerUrl: widgetMarkerUrl2,
+    });
+    return;
+  }
+
   try {
     const message = JSON.parse(rawData);
     const requestId = message?.id;
@@ -329,6 +382,7 @@ function handleBackendMessage(rawData) {
       let emittedText = '';
       let pendingChunkText = '';
       let insideFencedBlock = false;
+      let markerScanTail = '';
       window.runGeminiGenerate({
         prompt,
         files,
@@ -336,10 +390,24 @@ function handleBackendMessage(rawData) {
           sendToBackground('ws-status', payload);
         },
         onChunk: (text) => {
+          if (extensionDebugHalted) {
+            return;
+          }
+
           const chunk = String(text ?? '');
           if (chunk.length === 0) {
             return;
           }
+
+          const markerProbe = markerScanTail + chunk;
+          if (containsWidgetMarker(markerProbe)) {
+            haltExtensionForWidgetDebug({
+              source: 'stream-chunk',
+              requestId,
+            });
+            return;
+          }
+          markerScanTail = markerProbe.slice(-(widgetMarkerUrl2.length - 1));
 
           streamedText += chunk;
 
@@ -370,6 +438,18 @@ function handleBackendMessage(rawData) {
           }
         },
         onResult: ({ text, error }) => {
+          if (containsWidgetMarker(text) || containsWidgetMarker(error)) {
+            haltExtensionForWidgetDebug({
+              source: 'stream-result',
+              requestId,
+            });
+            return;
+          }
+
+          if (extensionDebugHalted) {
+            return;
+          }
+
           const finalText = String(text ?? '');
           const stablePrefix = insideFencedBlock
             ? emittedText

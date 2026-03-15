@@ -1,4 +1,17 @@
 // Sends a single tab message and resolves with the response.
+const widgetMarkerUrl = 'http://googleusercontent.com/immersive_entry_chip/0';
+
+function createWidgetMarkerError(source) {
+  const error = new Error(`Debug halt: detected Gemini immersive widget marker (${widgetMarkerUrl}) in ${source}`);
+  error.code = 'GEMINI_WIDGET_MARKER_DETECTED';
+  error.markerUrl = widgetMarkerUrl;
+  return error;
+}
+
+function containsWidgetMarker(text) {
+  return String(text ?? '').includes(widgetMarkerUrl);
+}
+
 function sendTabMessage(tabId, message) {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -28,6 +41,10 @@ async function waitForGeminiResponse(tabId, baselineResponse, timeoutMs = 120000
     tick += 1;
 
     const currentResponse = await tryExtractResponseMarkdown(tabId);
+    if (containsWidgetMarker(currentResponse)) {
+      throw createWidgetMarkerError('response markdown');
+    }
+
     if (typeof onChunk === 'function' && currentResponse && currentResponse !== lastEmittedResponse) {
       if (currentResponse.startsWith(lastEmittedResponse)) {
         const delta = currentResponse.slice(lastEmittedResponse.length);
@@ -119,6 +136,7 @@ async function waitForSendButtonEnabled(tabId, timeoutMs = 30000) {
 
 async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResult }) {
   let tabId = null;
+  let keepTabOpenForDebug = false;
 
   try {
     onStatus({ state: 'gemini-generate-started' });
@@ -176,15 +194,31 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
 
     // Poll until response is complete.
     const responseText = await waitForGeminiResponse(tabId, baselineResponse, 120000, onChunk);
+    if (containsWidgetMarker(responseText)) {
+      throw createWidgetMarkerError('final response text');
+    }
 
     console.log('[gemini-proxy-extension] gemini generate response', responseText);
     onResult({ text: responseText });
 
   } catch (error) {
+    if (error?.code === 'GEMINI_WIDGET_MARKER_DETECTED') {
+      keepTabOpenForDebug = true;
+      onStatus({
+        state: 'gemini-generate-debug-halt-widget-detected',
+        markerUrl: widgetMarkerUrl,
+        tabId,
+      });
+      console.error('[gemini-proxy-extension] debug halt: immersive widget marker detected; tab left open', {
+        tabId,
+        markerUrl: widgetMarkerUrl,
+      });
+    }
+
     onStatus({ state: 'gemini-generate-error', error: String(error) });
     onResult({ text: '', error: String(error) });
   } finally {
-    if (tabId !== null) {
+    if (tabId !== null && !keepTabOpenForDebug) {
       chrome.tabs.remove(tabId).catch(() => {});
     }
   }
