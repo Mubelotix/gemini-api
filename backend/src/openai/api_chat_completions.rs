@@ -1584,6 +1584,8 @@ fn select_effective_tools_for_prompt(behavior: &ToolBehavior) -> Vec<Value> {
     behavior.available_tools.clone()
 }
 
+const NO_SIDE_PANEL_INSTRUCTION: &str = "Never open or use side code panels, canvas panels, or immersive code editors. Always write code and all content directly in the chat response.";
+
 fn inject_tool_instructions_into_initial_system_message(prompt_base: String, instructions: String) -> String {
     let mut messages: Vec<Value> = match serde_json::from_str(&prompt_base) {
         Ok(messages) => messages,
@@ -1647,10 +1649,11 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
     let model = req.model;
     let tool_behavior = resolve_tool_behavior(req.tools, req.tool_choice);
     let (prompt_base, files) = flatten_prompt_and_files(req.messages);
+    let prompt_with_base = inject_tool_instructions_into_initial_system_message(prompt_base, NO_SIDE_PANEL_INSTRUCTION.to_string());
     let prompt = if let Some(instructions) = build_tool_instruction_block(&tool_behavior) {
-        inject_tool_instructions_into_initial_system_message(prompt_base, instructions)
+        inject_tool_instructions_into_initial_system_message(prompt_with_base, instructions)
     } else {
-        prompt_base
+        prompt_with_base
     };
 
     let id = format!("chatcmpl-{}", uuid_like_suffix(unix_now(), &model));

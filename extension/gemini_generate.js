@@ -1,19 +1,7 @@
 // Sends a single tab message and resolves with the response.
-const widgetMarkerUrl = 'http://googleusercontent.com/immersive_entry_chip/0';
 const GEMINI_RESPONSE_TIMEOUT_MS = 20 * 60 * 1000;
 // Tab registry helpers (geminiTabRegistry, computePromptHashes, findReusableTab,
 // stripMatchedMessages, pruneExpiredTabs) are defined in gemini_tab_registry.js.
-
-function createWidgetMarkerError(source) {
-  const error = new Error(`Debug halt: detected Gemini immersive widget marker (${widgetMarkerUrl}) in ${source}`);
-  error.code = 'GEMINI_WIDGET_MARKER_DETECTED';
-  error.markerUrl = widgetMarkerUrl;
-  return error;
-}
-
-function containsWidgetMarker(text) {
-  return String(text ?? '').includes(widgetMarkerUrl);
-}
 
 function sendTabMessage(tabId, message) {
   return new Promise((resolve, reject) => {
@@ -47,9 +35,6 @@ async function waitForGeminiResponse(tabId, baselineResponse, timeoutMs = GEMINI
     tick += 1;
 
     const currentResponse = await tryExtractResponseMarkdown(tabId);
-    if (containsWidgetMarker(currentResponse)) {
-      throw createWidgetMarkerError('response markdown');
-    }
 
     if (typeof onChunk === 'function' && currentResponse && currentResponse !== lastEmittedResponse) {
       if (currentResponse.startsWith(lastEmittedResponse)) {
@@ -142,7 +127,6 @@ async function waitForSendButtonEnabled(tabId, timeoutMs = 30000) {
 
 async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResult }) {
   let tabId = null;
-  let keepTabOpenForDebug = false;
   let isReusedTab = false;
 
   pruneExpiredTabs();
@@ -242,10 +226,6 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       onChunk,
       isReusedTab ? null : baselineResponse,
     );
-    if (containsWidgetMarker(responseText)) {
-      throw createWidgetMarkerError('final response text');
-    }
-
     console.log('[gemini-proxy-extension] gemini generate response', responseText);
 
     // Mark the tab as idle and record the full request hashes so future requests
@@ -260,19 +240,6 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
     onResult({ text: responseText });
 
   } catch (error) {
-    if (error?.code === 'GEMINI_WIDGET_MARKER_DETECTED') {
-      keepTabOpenForDebug = true;
-      onStatus({
-        state: 'gemini-generate-debug-halt-widget-detected',
-        markerUrl: widgetMarkerUrl,
-        tabId,
-      });
-      console.error('[gemini-proxy-extension] debug halt: immersive widget marker detected; tab left open', {
-        tabId,
-        markerUrl: widgetMarkerUrl,
-      });
-    }
-
     // Ensure the tab is no longer marked as generating so it can be reused or
     // cleaned up by the next pruneExpiredTabs() call.
     if (tabId !== null) {
@@ -283,11 +250,7 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
     onStatus({ state: 'gemini-generate-error', error: String(error) });
     onResult({ text: '', error: String(error) });
   } finally {
-    if (keepTabOpenForDebug && tabId !== null) {
-      // Tab left open intentionally for debugging; remove from registry so it
-      // is not reused in a broken state.
-      geminiTabRegistry.delete(tabId);
-    } else if (!isReusedTab && tabId !== null) {
+    if (!isReusedTab && tabId !== null) {
       // New tab: keep it open only if generation succeeded (entry has hashes).
       // On failure the entry is empty; close the tab and clean up the registry.
       const entry = geminiTabRegistry.get(tabId);
