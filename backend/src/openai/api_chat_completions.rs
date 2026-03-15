@@ -595,15 +595,15 @@ fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
             "Do not call any tool. Return only normal assistant text.".to_string()
         }
         ToolChoiceMode::Auto => {
-            "Tools are available and it can be smart to use them when they help. You may either return assistant text or call one or more tools.".to_string()
+            "Tools are available. Choose exactly one mode for this response: either output assistant text only, or output a single tool-calls json block only.".to_string()
         }
         ToolChoiceMode::Required => {
-            "You must call at least one tool in this response. Do not return a text-only response.".to_string()
+            "You must call at least one tool in this response. Do not output assistant text.".to_string()
         }
     };
 
     let stop_wait_line = if matches!(behavior.mode, ToolChoiceMode::Auto) {
-        "If you intend to stop, wait, or ask for user input, output assistant text only and do not output any tool-calls block, because tool calls trigger immediate reprompting."
+        "In auto mode, any assistant text is treated as a final answer and ends the agent turn. If more work is needed, output only a tool-calls block and no assistant text."
     } else {
         ""
     };
@@ -625,7 +625,7 @@ fn build_tool_instruction_block(behavior: &ToolBehavior) -> Option<String> {
 ```"#;
 
     Some(format!(
-        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\n{}\nIf you call tools, your output must be in this order only:\n1) Optional assistant text first.\n2) Exactly one fenced json code block containing \"tool_calls\" as the final output segment.\nNever output a second tool-calls block.\nAfter the closing ``` fence of that json block, stop immediately. Any content after the closing fence is discarded.\nDo not output assistant text after the tool-calls block.\nRequired shape inside the code block:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
+        "[TOOL_CALLING_INSTRUCTIONS]\n{}\n{}\n{}\nOutput contract: choose exactly one mode.\nA) Text mode: output assistant text only, and do not output any tool-calls block.\nB) Tool mode: output exactly one fenced json code block containing \"tool_calls\" and no assistant text before or after it.\nWhen using tool mode, stop immediately after the closing ``` fence. Any content after the closing fence is discarded.\nNever output a second tool-calls block.\nRequired shape inside the code block:\n{{\n  \"tool_calls\": [\n    {{\n      \"type\": \"function\" | \"custom\",\n      \"function\": {{\"name\": \"...\", \"arguments\": \"...\"}},\n      \"custom\": {{\"name\": \"...\", \"input\": \"...\"}}\n    }}\n  ]\n}}\nFor function calls, \"arguments\" MUST be a JSON-encoded string (like JSON.stringify output), not a raw object. Inner quotes must be escaped.\nValid example:\n{}\nAvailable tools:\n{}\n[/TOOL_CALLING_INSTRUCTIONS]",
         mode_line,
         forced_line,
         stop_wait_line,
@@ -1241,42 +1241,50 @@ fn parse_tool_calls_from_text(text: &str, id_seed: &str) -> Option<Vec<Value>> {
 }
 
 fn parse_tool_calls_and_content(text: &str, id_seed: &str) -> (Vec<Value>, Option<String>) {
-    let blocks = extract_fenced_block_ranges(text);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return (Vec::new(), None);
+    }
 
-    for (start, _end, content) in &blocks {
-        let san_content = sanitize_malformed_tool_arguments_json(content);
+    // Enforce exclusive behavior: only treat the response as tool-calls if it starts
+    // with a tool-calls payload. Any leading assistant text commits to text mode.
+    if trimmed.starts_with("```") {
+        if let Some((_start, _end, first_block_content)) =
+            extract_fenced_block_ranges(trimmed).into_iter().next()
+        {
+            let sanitized = sanitize_malformed_tool_arguments_json(&first_block_content);
+            for candidate in [sanitized.as_str(), first_block_content.as_str()] {
+                let repaired = repair_incomplete_json(candidate);
+                let parsed = serde_json::from_str::<Value>(&repaired).ok().or_else(|| {
+                    let mut des = serde_json::Deserializer::from_str(&repaired);
+                    Value::deserialize(&mut des).ok()
+                });
 
-        for candidate in [san_content.as_str(), content.as_str()] {
-            let repaired = repair_incomplete_json(candidate);
-            let parsed = serde_json::from_str::<Value>(&repaired).ok().or_else(|| {
-                let mut des = serde_json::Deserializer::from_str(&repaired);
-                Value::deserialize(&mut des).ok()
-            });
-
-            if let Some(parsed) = parsed
-                && let Some(arr) = parsed
-                    .as_object()
-                    .and_then(|o| o.get("tool_calls"))
-                    .and_then(Value::as_array)
-                    .cloned()
-            {
-                let normalized = normalize_tool_calls(&arr, id_seed);
-                if !normalized.is_empty() {
-                    let prefix = text[..*start].trim().to_string();
-                    let content = if prefix.is_empty() {
-                        None
-                    } else {
-                        Some(prefix)
-                    };
-                    return (normalized, content);
+                if let Some(parsed) = parsed
+                    && let Some(arr) = parsed
+                        .as_object()
+                        .and_then(|o| o.get("tool_calls"))
+                        .and_then(Value::as_array)
+                        .cloned()
+                {
+                    let normalized = normalize_tool_calls(&arr, id_seed);
+                    if !normalized.is_empty() {
+                        return (normalized, None);
+                    }
                 }
             }
         }
+        return (Vec::new(), Some(trimmed.to_string()));
     }
 
-    // Fallback for non-fenced JSON/truncated responses: parse best-effort tool calls.
-    let tool_calls = parse_tool_calls_from_text(text, id_seed).unwrap_or_default();
-    (tool_calls, None)
+    if (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && let Some(tool_calls) = parse_tool_calls_from_text(trimmed, id_seed)
+        && !tool_calls.is_empty()
+    {
+        return (tool_calls, None);
+    }
+
+    (Vec::new(), Some(trimmed.to_string()))
 }
 
 fn select_effective_tools_for_prompt(behavior: &ToolBehavior) -> Vec<Value> {
@@ -1346,7 +1354,7 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
         non_stream_body_opt = Some(if tool_mode_active {
             let (tool_calls, content) = parse_tool_calls_and_content(&response_text, &id);
             if !tool_calls.is_empty() {
-                build_non_stream_tool_response(id.clone(), created, model.clone(), tool_calls, content)
+                build_non_stream_tool_response(id.clone(), created, model.clone(), tool_calls, None)
             } else {
                 build_non_stream_response(id.clone(), created, model.clone(), content.unwrap_or(response_text))
             }
@@ -1420,41 +1428,16 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
                     };
 
                     if !tool_calls.is_empty() {
-                        if let Some(content) = content_opt {
-                            let content_chunk = build_stream_chunk(
-                                id.clone(),
-                                created,
-                                model.clone(),
-                                Some(content),
-                                true,
-                                false,
-                            );
-                            if let Ok(line) = serde_json::to_string(&content_chunk) {
-                                yield format!("data: {}\n\n", line);
-                            }
-                            let tool_chunk = build_stream_tool_call_chunk(
-                                id.clone(),
-                                created,
-                                model.clone(),
-                                tool_calls,
-                                false,
-                                true,
-                            );
-                            if let Ok(line) = serde_json::to_string(&tool_chunk) {
-                                yield format!("data: {}\n\n", line);
-                            }
-                        } else {
-                            let chunk = build_stream_tool_call_chunk(
-                                id.clone(),
-                                created,
-                                model.clone(),
-                                tool_calls,
-                                true,
-                                true,
-                            );
-                            if let Ok(line) = serde_json::to_string(&chunk) {
-                                yield format!("data: {}\n\n", line);
-                            }
+                        let chunk = build_stream_tool_call_chunk(
+                            id.clone(),
+                            created,
+                            model.clone(),
+                            tool_calls,
+                            true,
+                            true,
+                        );
+                        if let Ok(line) = serde_json::to_string(&chunk) {
+                            yield format!("data: {}\n\n", line);
                         }
                     } else {
                         let role_chunk = build_stream_chunk(
@@ -1765,43 +1748,46 @@ mod tests {
             }
 
     #[test]
-    fn parses_tool_calls_and_surrounding_text_as_content() {
+    fn treats_text_then_tool_block_as_text_mode() {
         let text = "Let me look at the workspace first.\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"gemini-ollama\\\"}\"}}]}\n```";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
-        assert_eq!(tool_calls.len(), 1);
-
-        let name = tool_calls[0]
-            .get("function")
-            .and_then(Value::as_object)
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .expect("name must be present");
-        assert_eq!(name, "grep_search");
+        assert!(tool_calls.is_empty(), "tool calls must be ignored after leading text");
 
         let content = content.expect("content should be present");
         assert!(content.contains("Let me look"), "content should contain prefix text");
+        assert!(content.contains("tool_calls"), "content should preserve full text output");
     }
 
     #[test]
-    fn keeps_only_first_tool_call_block_when_multiple_blocks_exist() {
+    fn parses_tool_calls_when_output_starts_with_tool_block() {
+        let text = "```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\n\nIgnore this trailing output";
+
+        let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(
+            tool_calls[0].get("function").and_then(Value::as_object).and_then(|f| f.get("name")).and_then(Value::as_str),
+            Some("grep_search")
+        );
+
+        assert!(content.is_none(), "tool mode should not return assistant content");
+    }
+
+    #[test]
+    fn treats_text_then_multiple_tool_blocks_as_text_mode() {
         let text = "Starting search.\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\n\nAlso reading files:\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"filePath\\\":\\\"/tmp/a.txt\\\",\\\"startLine\\\":1,\\\"endLine\\\":10}\"}}]}\n```";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(
-            tool_calls[0].get("function").and_then(Value::as_object).and_then(|f| f.get("name")).and_then(Value::as_str),
-            Some("grep_search")
-        );
+        assert!(tool_calls.is_empty(), "tool calls must be ignored after leading text");
 
         let content = content.expect("content should be present");
-        assert!(content.contains("Starting search"), "content should contain first text segment");
-        assert!(!content.contains("Also reading files"), "content should discard everything after first tool block");
+        assert!(content.contains("Starting search"));
+        assert!(content.contains("Also reading files"));
     }
 
     #[test]
-    fn discards_trailing_text_after_tool_call_block() {
-        let text = "Plan:\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\nIgnore this trailing output";
+    fn discards_trailing_text_after_leading_tool_call_block() {
+        let text = "```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\nIgnore this trailing output";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
         assert_eq!(tool_calls.len(), 1);
@@ -1810,14 +1796,12 @@ mod tests {
             Some("grep_search")
         );
 
-        let content = content.expect("content should be present");
-        assert!(content.contains("Plan:"));
-        assert!(!content.contains("Ignore this trailing output"));
+        assert!(content.is_none(), "trailing text must be discarded in tool mode");
     }
 
     #[test]
-    fn discards_trailing_fenced_block_after_tool_calls_json_block() {
-        let text = "Planning.\n\n```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\n\n```json\n{\"note\":\"this must be ignored\"}\n```";
+    fn discards_trailing_fenced_block_after_leading_tool_calls_json_block() {
+        let text = "```json\n{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"grep_search\",\"arguments\":\"{\\\"isRegexp\\\":false,\\\"query\\\":\\\"foo\\\"}\"}}]}\n```\n\n```json\n{\"note\":\"this must be ignored\"}\n```";
 
         let (tool_calls, content) = parse_tool_calls_and_content(text, "seed");
         assert_eq!(tool_calls.len(), 1);
@@ -1826,9 +1810,7 @@ mod tests {
             Some("grep_search")
         );
 
-        let content = content.expect("content should be present");
-        assert!(content.contains("Planning."));
-        assert!(!content.contains("this must be ignored"));
+        assert!(content.is_none(), "trailing fenced blocks must be discarded in tool mode");
     }
 
         #[test]
