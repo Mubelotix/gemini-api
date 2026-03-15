@@ -92,5 +92,5 @@ docker run --rm \
   -v "$CONFIG_DIR:/config" \
   -v "$BUILD_DIR/$EXT_ID.json:/opt/google/chrome/extensions/$EXT_ID.json:ro" \
   -v "$POLICY_FILE:/etc/opt/chrome/policies/managed/gemini-proxy-extension-policy.json:ro" \
-  --shm-size="1gb" \
+  --shm-size="2gb" \
   lscr.io/linuxserver/chrome:latest
