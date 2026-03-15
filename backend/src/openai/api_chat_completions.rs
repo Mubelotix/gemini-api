@@ -1310,6 +1310,54 @@ fn select_effective_tools_for_prompt(behavior: &ToolBehavior) -> Vec<Value> {
     behavior.available_tools.clone()
 }
 
+fn inject_tool_instructions_into_initial_system_message(prompt_base: String, instructions: String) -> String {
+    let mut messages: Vec<Value> = match serde_json::from_str(&prompt_base) {
+        Ok(messages) => messages,
+        Err(_) => return format!("{}\n\n{}", prompt_base, instructions),
+    };
+
+    for message in &mut messages {
+        let Some(message_obj) = message.as_object_mut() else {
+            continue;
+        };
+
+        let role = message_obj
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        if role != "system" {
+            continue;
+        }
+
+        let content = message_obj
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        let merged = if content.contains("[TOOL_CALLING_INSTRUCTIONS]") {
+            content.to_string()
+        } else if content.is_empty() {
+            instructions.clone()
+        } else {
+            format!("{}\n\n{}", content, instructions)
+        };
+
+        message_obj.insert("content".to_string(), Value::String(merged));
+
+        return serde_json::to_string(&messages)
+            .unwrap_or_else(|_| format!("{}\n\n{}", prompt_base, instructions));
+    }
+
+    messages.insert(0, serde_json::json!({
+        "role": "system",
+        "content": instructions,
+    }));
+
+    serde_json::to_string(&messages)
+        .unwrap_or(prompt_base)
+}
+
 #[post("/chat/completions", format = "json", data = "<payload>")]
 pub async fn chat_completions(payload: Json<ChatCompletionsRequest>, state: &State<ExtensionBridge>) -> AppResult<TextStream![String]> {
     chat_completions_impl(payload.into_inner(), state).await
@@ -1326,7 +1374,7 @@ async fn chat_completions_impl(req: ChatCompletionsRequest, state: &State<Extens
     let tool_behavior = resolve_tool_behavior(req.tools, req.tool_choice);
     let (prompt_base, files) = flatten_prompt_and_files(req.messages);
     let prompt = if let Some(instructions) = build_tool_instruction_block(&tool_behavior) {
-        format!("{}\n\n{}", prompt_base, instructions)
+        inject_tool_instructions_into_initial_system_message(prompt_base, instructions)
     } else {
         prompt_base
     };
