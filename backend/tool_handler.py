@@ -2,7 +2,7 @@ import json
 import time
 import re
 import asyncio
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from bridge import bridge
@@ -234,7 +234,7 @@ async def get_non_stream_response(cmd_id: int, queue: asyncio.Queue, model: str)
     }
 
 def build_stream_chunk(id: str, created: int, model: str, content: Optional[str], tool_calls: Optional[list], include_role: bool, done: bool) -> dict:
-    delta = {}
+    delta: Dict[str, Any] = {}
     if include_role:
         delta["role"] = "assistant"
     if content is not None:

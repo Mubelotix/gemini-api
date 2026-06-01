@@ -12,6 +12,11 @@ Located in folder ./backend
 Implemented in Python using BentoML and FastAPI.
 When changing the API or the logic behind it, make sure to offer a curl command to test the API manually once you are done implementing.
 
+### Type checking
+All Python files under `backend/` must have full type annotations. Run static type checking using:
+`.venv/bin/mypy --check-untyped-defs backend`
+Ensure that the mypy run reports no errors, as this check is enforced in CI.
+
 
 ## Extension
 

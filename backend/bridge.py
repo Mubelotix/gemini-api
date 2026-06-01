@@ -1,6 +1,6 @@
 import json
 import asyncio
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple, Any
 from fastapi import WebSocket
 
 # Helper for decoding images from data URLs to bytes for the extension
@@ -46,9 +46,9 @@ def extract_text_and_images(content) -> tuple[str, list[str]]:
     return str(content), []
 
 # Helper to format and flatten messages/files for the OpenAI prompt
-def flatten_prompt_and_files(messages: List[dict]) -> tuple[str, list[dict]]:
-    prompt_messages = []
-    files = []
+def flatten_prompt_and_files(messages: List[dict]) -> Tuple[str, List[dict]]:
+    prompt_messages: List[dict] = []
+    files: List[dict] = []
     
     for msg in messages:
         role = msg.get("role")

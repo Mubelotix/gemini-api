@@ -147,7 +147,7 @@ async def chat_completions(request: ChatCompletionsRequest):
         raise HTTPException(status_code=503, detail="No browser extension connected")
         
     cmd_id = await bridge.get_next_id()
-    queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue()
     bridge.register_receiver(cmd_id, queue)
     
     try:
