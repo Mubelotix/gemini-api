@@ -11,6 +11,22 @@ import tool_handler
 
 router = APIRouter()
 
+@router.get("/v1/models")
+@router.get("/models")
+async def list_models() -> dict:
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "gemini-3.5-flash",
+                "object": "model",
+                "created": 1715644800,
+                "owned_by": "google"
+            }
+        ]
+    }
+
+
 class ChatCompletionsRequest(BaseModel):
     messages: List[dict]
     model: str
