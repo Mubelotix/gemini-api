@@ -9,12 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bridge import bridge
 from openai_api import router as openai_router
-from ollama_api import router as ollama_router
 
 # 1. Create FastAPI app and include modular routers
 app = FastAPI()
 app.include_router(openai_router)
-app.include_router(ollama_router)
 
 # 2. Main index endpoint
 @app.get("/")

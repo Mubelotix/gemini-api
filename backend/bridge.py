@@ -82,33 +82,7 @@ def flatten_prompt_and_files(messages: List[dict]) -> tuple[str, list[dict]]:
     prompt = json.dumps(prompt_messages)
     return prompt, files
 
-# Helper to format and flatten messages/files for the Ollama chat prompt
-def flatten_chat_prompt_and_files(messages: List[dict]) -> tuple[str, list[dict]]:
-    prompt_messages = []
-    files = []
-    
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content", "")
-        images = msg.get("images") or []
-        
-        image_indices = []
-        for img in images:
-            next_idx = len(files)
-            files.append(decode_image_to_file(img))
-            image_indices.append(next_idx)
-            
-        chat_msg = {
-            "role": role,
-            "content": content,
-        }
-        if image_indices:
-            chat_msg["images"] = image_indices
-            
-        prompt_messages.append(chat_msg)
-        
-    prompt = json.dumps(prompt_messages)
-    return prompt, files
+
 
 # Extension bridge to manage websocket connection and route commands/responses
 class ExtensionBridge:
