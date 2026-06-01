@@ -139,6 +139,32 @@ function pasteFilesIntoGemini(files) {
 	return files.length;
 }
 
+function findSendButton() {
+	// Try standard English
+	let btn = document.querySelector('button[aria-label="Send message"]');
+	if (btn) return btn;
+
+	// Try common translations
+	btn = document.querySelector('button[aria-label*="Send"], button[aria-label*="send"], button[aria-label*="Envoyer"], button[aria-label*="envoyer"], button[aria-label*="Enviar"], button[aria-label*="enviar"], button[aria-label*="Senden"], button[aria-label*="senden"]');
+	if (btn) return btn;
+
+	// Fallback to input area buttons
+	const inputArea = document.querySelector('input-area-v2') || document.querySelector('input-area');
+	if (inputArea) {
+		const buttons = Array.from(inputArea.querySelectorAll('button'));
+		for (const b of buttons) {
+			const label = (b.getAttribute('aria-label') || '').toLowerCase();
+			if (label.includes('send') || label.includes('envoyer') || label.includes('enviar') || label.includes('senden') || label.includes('submit')) {
+				return b;
+			}
+		}
+		if (buttons.length > 0) {
+			return buttons[buttons.length - 1];
+		}
+	}
+	return null;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	if (!message) {
 		return;
@@ -177,9 +203,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 	if (message.type === 'gemini-click-send') {
 		try {
-			const button = document.querySelector('button[aria-label="Send message"]');
+			const button = findSendButton();
 			if (!button) {
-				sendResponse({ success: false, error: 'Could not find button[aria-label="Send message"]' });
+				sendResponse({ success: false, error: 'Could not find the Send button' });
 				return true;
 			}
 			button.click();
@@ -191,7 +217,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	}
 
 	if (message.type === 'gemini-can-send') {
-		const button = document.querySelector('button[aria-label="Send message"]');
+		const button = findSendButton();
 		sendResponse({
 			canSend: Boolean(button) && button.getAttribute('aria-disabled') !== 'true',
 		});
