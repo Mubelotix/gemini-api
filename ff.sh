@@ -46,15 +46,14 @@ with open(manifest_path, "w", encoding="utf-8") as f:
 PY
 
 docker run --rm \
+  --entrypoint /bin/bash \
   --user "$(id -u):$(id -g)" \
-  -e PUID=$(id -u) \
-  -e PGID=$(id -g) \
   -v "$BUILD_DIR:/work" \
   lscr.io/linuxserver/chrome:latest \
-  /bin/bash -lc '
+  -c '
     set -e
     CHROME_BIN="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || command -v chromium-browser)"
-    "$CHROME_BIN" --no-sandbox --pack-extension=/work/src --pack-extension-key=/work/extension.pem >/dev/null 2>&1
+    HOME=/tmp "$CHROME_BIN" --no-sandbox --pack-extension=/work/src --pack-extension-key=/work/extension.pem >/dev/null 2>&1
   '
 
 mv -f "$BUILD_DIR/src.crx" "$CRX_FILE"
@@ -79,7 +78,7 @@ JSON
 
 echo "Force-installed extension id: $EXT_ID version $EXT_VERSION"
 
-rm ./config/chrome.log
+rm -f "$CONFIG_DIR/chrome.log"
 docker run --rm \
   --name=chrome \
   -e PUID=$(id -u) \
