@@ -87,9 +87,6 @@ function handleDevToolsNetworkRequest(body) {
     if (activeGenerateRequest.timeout) {
       clearTimeout(activeGenerateRequest.timeout);
     }
-    if (typeof activeGenerateRequest.onChunk === 'function') {
-      activeGenerateRequest.onChunk(text);
-    }
     activeGenerateRequest.resolve(text);
     activeGenerateRequest = null;
   } else {
