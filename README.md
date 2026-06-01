@@ -24,7 +24,9 @@ docker run --rm -d \
 ```
 
 > [!TIP]
-> Open **[http://localhost:3000](http://localhost:3000)** in your browser, log in to Google/Gemini inside the desktop interface, and you are ready to go!
+> - Open **[http://localhost:3000](http://localhost:3000)** in your browser, log in to Google/Gemini inside the desktop interface, and you are ready to go!
+> - **Running Headless**: Once your session is persisted in `/config`, you can run Chrome in native headless mode by simply passing the environment variable `-e HEADLESS=true` when running the container.
+
 
 ### 2. Send your first Request
 Test the OpenAI-compatible endpoint from your terminal:

@@ -73,6 +73,40 @@ PY
 # Cleanup temporary build files
 RUN rm -rf /tmp/extension-src /tmp/ext_id.txt
 
+# Overwrite default autostart scripts to always include required chrome flags and support HEADLESS=true
+RUN cat <<'EOF' > /defaults/autostart
+#!/bin/bash
+REQUIRED_FLAGS="--enable-logging --v=1 --log-file=/config/chrome.log --auto-open-devtools-for-tabs"
+if [ "${HEADLESS}" = "true" ]; then
+  REQUIRED_FLAGS="${REQUIRED_FLAGS} --headless=new"
+fi
+exec wrapped-chrome ${REQUIRED_FLAGS} ${CHROME_CLI}
+EOF
+
+RUN cat <<'EOF' > /defaults/autostart_wayland
+#!/bin/bash
+REQUIRED_FLAGS="--enable-logging --v=1 --log-file=/config/chrome.log --auto-open-devtools-for-tabs"
+if [ "${HEADLESS}" = "true" ]; then
+  REQUIRED_FLAGS="${REQUIRED_FLAGS} --headless=new"
+fi
+exec wrapped-chrome --enable-features=UseOzonePlatform --ozone-platform=wayland ${REQUIRED_FLAGS} ${CHROME_CLI}
+EOF
+
+RUN chmod +x /defaults/autostart /defaults/autostart_wayland
+
+# Force-copy updated autostart scripts to the mounted config folder on container startup
+RUN mkdir -p /custom-cont-init.d && \
+    cat <<'EOF' > /custom-cont-init.d/50-copy-autostart
+#!/bin/bash
+echo "[gemini-api] Force-updating autostart scripts in /config/.config/..."
+mkdir -p /config/.config/labwc /config/.config/openbox
+cp -f /defaults/autostart /config/.config/openbox/autostart
+cp -f /defaults/autostart_wayland /config/.config/labwc/autostart
+chown -R abc:abc /config/.config
+EOF
+RUN chmod +x /custom-cont-init.d/50-copy-autostart
+
+
 # Set up the Python virtual environment for the BentoML backend
 WORKDIR /app/backend
 COPY backend/requirements.txt /app/backend/
@@ -94,10 +128,6 @@ exec .venv/bin/bentoml serve service:OpenAICompatibleService --port 1111 --host 
 EOF
 RUN chmod +x /etc/s6-overlay/s6-rc.d/backend/run && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/backend
-
-# Set default environment variables for Chrome
-# --auto-open-devtools-for-tabs is required for the extension to capture API traffic
-ENV CHROME_CLI="--enable-logging --v=1 --log-file=/config/chrome.log --auto-open-devtools-for-tabs"
 
 # Expose ports:
 # 3000: Chrome desktop UI via KasmVNC
