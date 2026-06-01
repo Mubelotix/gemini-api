@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from bridge import bridge, flatten_prompt_and_files
+import tool_handler
 
 router = APIRouter()
 
@@ -14,6 +15,7 @@ class ChatCompletionsRequest(BaseModel):
     messages: List[dict]
     model: str
     stream: Optional[bool] = False
+    tools: Optional[List[dict]] = None
 
     class Config:
         extra = "allow"
@@ -137,7 +139,8 @@ async def get_non_stream_response(cmd_id: int, queue: asyncio.Queue, model: str)
 @router.post("/chat/completions")
 async def chat_completions(request: ChatCompletionsRequest):
     model = request.model
-    prompt, files = flatten_prompt_and_files(request.messages)
+    processed_messages = tool_handler.preprocess_messages(request.messages, request.tools)
+    prompt, files = flatten_prompt_and_files(processed_messages)
     stream_enabled = request.stream
     
     if not bridge.active_websocket:
@@ -155,8 +158,8 @@ async def chat_completions(request: ChatCompletionsRequest):
         
     if stream_enabled:
         return StreamingResponse(
-            event_generator(cmd_id, queue, model),
+            tool_handler.event_generator(cmd_id, queue, model),
             media_type="text/event-stream"
         )
     else:
-        return await get_non_stream_response(cmd_id, queue, model)
+        return await tool_handler.get_non_stream_response(cmd_id, queue, model)
