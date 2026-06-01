@@ -386,6 +386,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 	if (message.type === 'gemini-inject-prompt') {
 		try {
+			if (isGeminiGuestUploadBlocked()) {
+				throw new Error('User is not signed in to Gemini. Please sign in first.');
+			}
 			const editor = getGeminiEditor();
 			// Escape HTML entities to prevent injection.
 			const safe = String(message.prompt)

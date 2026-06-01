@@ -150,20 +150,5 @@ class ExtensionBridge:
         if cmd_id is not None and cmd_id in self.receivers:
             await self.receivers[cmd_id].put(data)
 
-    async def request_gemini_sign_in_presence(self) -> bool:
-        if not self.active_websocket:
-            return False
-        cmd_id = await self.get_next_id()
-        queue = asyncio.Queue()
-        self.register_receiver(cmd_id, queue)
-        try:
-            await self.send_command(cmd_id, "check-gemini-login")
-            item = await asyncio.wait_for(queue.get(), timeout=5.0)
-            return item.get("signInPresent", True)
-        except Exception:
-            return False
-        finally:
-            self.unregister_receiver(cmd_id)
-
 # Singleton bridge instance
 bridge = ExtensionBridge()

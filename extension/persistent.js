@@ -341,31 +341,7 @@ function handleBackendMessage(rawData) {
       return;
     }
 
-    if (message?.type === 'check-gemini-login') {
-      if (typeof window.runGeminiLoginCheck !== 'function') {
-        sendToBackground('ws-status', {
-          state: 'gemini-check-error',
-          error: 'Gemini login checker is unavailable',
-        });
-        return;
-      }
 
-      window.runGeminiLoginCheck({
-        onStatus: (payload) => {
-          sendToBackground('ws-status', payload);
-        },
-        onResult: ({ signInPresent }) => {
-          if (websocket && websocket.readyState === WebSocket.OPEN) {
-            websocket.send(JSON.stringify({
-              id: requestId,
-              type: 'gemini-login-status',
-              signInPresent,
-              done: true,
-            }));
-          }
-        },
-      });
-    }
 
     if (message?.type === 'gemini-generate') {
       if (typeof window.runGeminiGenerate !== 'function') {
