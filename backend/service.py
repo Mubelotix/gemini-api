@@ -1,47 +1,46 @@
+import os
+import sys
+import json
 import bentoml
-from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List, Optional
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-# 1. Define your minimal OpenAI Schemas (or import them from vLLM/LiteLLM)
-class Message(BaseModel):
-    role: str
-    content: str
+# Add current directory to path so that sibling imports work in worker processes
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-class ChatRequest(BaseModel):
-    messages: List[Message]
-    model: Optional[str] = "my-custom-function"
+from bridge import bridge
+from openai_api import router as openai_router
+from ollama_api import router as ollama_router
 
-# 2. Your custom text generation logic
-def my_simple_text_generator(messages):
-    last_message = messages[-1].content
-    return f"You said: {last_message}. This is a generated response."
-
-# 3. Create a FastAPI app
+# 1. Create FastAPI app and include modular routers
 app = FastAPI()
+app.include_router(openai_router)
+app.include_router(ollama_router)
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest):
-    # Call your function
-    response_text = my_simple_text_generator(request.messages)
-    
-    # Return the exact OpenAI JSON structure
-    return {
-        "id": "chatcmpl-123",
-        "object": "chat.completion",
-        "created": 1234567890,
-        "model": request.model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": response_text
-            },
-            "finish_reason": "stop"
-        }]
-    }
+# 2. Main index endpoint
+@app.get("/")
+async def index():
+    return "Hello, world!"
 
-# 4. Wrap it all in BentoML
+# 3. WebSocket endpoint for Chrome Extension bridge routing
+@app.websocket("/incoming-requests")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    await bridge.register_websocket(websocket)
+    try:
+        while True:
+            try:
+                data = await websocket.receive_json()
+                await bridge.handle_client_message(data)
+            except (json.JSONDecodeError, ValueError):
+                continue
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        bridge.unregister_websocket()
+
+# 4. Wrap the FastAPI app in a BentoML service definition
 @bentoml.asgi_app(app, path="/")
 @bentoml.service(resources={"cpu": "2"})
 class OpenAICompatibleService:
