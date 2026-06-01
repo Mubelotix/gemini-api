@@ -1,9 +1,0 @@
-pub mod api_generate;
-pub mod api_chat;
-pub mod api_delete;
-pub mod api_pull;
-pub mod api_push;
-pub mod api_embed;
-pub mod api_copy;
-pub mod api_models;
-pub mod api_version;
