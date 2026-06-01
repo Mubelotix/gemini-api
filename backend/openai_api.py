@@ -86,11 +86,11 @@ async def get_non_stream_response(cmd_id: int, queue: asyncio.Queue, model: str)
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=1200.0)
             except asyncio.TimeoutError:
-                raise RuntimeError("Timeout waiting for response from browser extension")
+                raise HTTPException(status_code=504, detail="Timeout waiting for response from browser extension")
                 
             error = item.get("error")
             if error:
-                raise RuntimeError(error)
+                raise HTTPException(status_code=500, detail=str(error))
                 
             text = item.get("text", "")
             if text:
