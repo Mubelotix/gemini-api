@@ -1,0 +1,4 @@
+model_list:
+- litellm_params:
+    model: gemini-ollama/gemini-3.5-flash
+  model_name: gemini-3.5-flash

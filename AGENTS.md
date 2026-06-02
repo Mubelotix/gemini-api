@@ -9,7 +9,7 @@ Keep --rm on the docker and never enable restart.
 ## Backend
 
 Located in folder ./backend
-Implemented in Python using BentoML and FastAPI.
+Implemented in Python using LiteLLM and FastAPI.
 When changing the API or the logic behind it, make sure to offer a curl command to test the API manually once you are done implementing.
 
 ### Type checking

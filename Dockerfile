@@ -107,24 +107,26 @@ EOF
 RUN chmod +x /custom-cont-init.d/50-copy-autostart
 
 
-# Set up the Python virtual environment for the BentoML backend
-WORKDIR /app/backend
-COPY backend/requirements.txt /app/backend/
-RUN python3 -m venv .venv && \
-    .venv/bin/pip install --no-cache-dir -r requirements.txt
+# Copy uv binary from the official image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Set up the Python virtual environment using uv
+WORKDIR /app
+COPY pyproject.toml uv.lock /app/
+RUN uv sync --frozen --no-dev
 
 # Copy backend files
 COPY backend /app/backend
 
 # Configure s6-overlay services
-# 1. Add longrun service for BentoML backend and ensure hosts file is configured at launch
+# 1. Add longrun service for LiteLLM backend and ensure hosts file is configured at launch
 RUN mkdir -p /etc/s6-overlay/s6-rc.d/backend && \
     echo "longrun" > /etc/s6-overlay/s6-rc.d/backend/type
 RUN cat <<'EOF' > /etc/s6-overlay/s6-rc.d/backend/run
 #!/command/with-contenv bash
 echo "127.0.0.1 host.docker.internal" >> /etc/hosts || true
-cd /app/backend
-exec .venv/bin/bentoml serve service:OpenAICompatibleService --port 1111 --host 0.0.0.0
+cd /app
+exec .venv/bin/python backend/service.py
 EOF
 RUN chmod +x /etc/s6-overlay/s6-rc.d/backend/run && \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/backend

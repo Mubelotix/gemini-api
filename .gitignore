@@ -1,3 +1,4 @@
 config/
 .antigravitycli/
 */__pycache__
+.python-version
