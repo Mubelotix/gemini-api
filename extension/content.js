@@ -224,3 +224,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 		return true;
 	}
 });
+
+window.addEventListener("message", (event) => {
+	if (event.source !== window) return;
+	const message = event.data;
+	if (message && message.type === "gemini-stream-chunk") {
+		chrome.runtime.sendMessage({
+			type: "gemini-stream-chunk",
+			body: message.body
+		}).catch(() => {});
+	}
+});
+

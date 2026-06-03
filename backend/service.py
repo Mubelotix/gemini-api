@@ -34,8 +34,11 @@ class GeminiOllamaCustomProvider(CustomLLM):
             bridge.unregister_receiver(cmd_id)
             raise Exception(f"Failed to send command: {e}")
 
+        # Clean provider prefix if added by LiteLLM wildcard routing
+        clean_model = model.replace("gemini-ollama/", "", 1)
+
         try:
-            response_dict = await tool_handler.get_non_stream_response(cmd_id, queue, model)
+            response_dict = await tool_handler.get_non_stream_response(cmd_id, queue, clean_model)
             return ModelResponse(**response_dict)
         except HTTPException as e:
             raise Exception(str(e.detail))
@@ -58,7 +61,10 @@ class GeminiOllamaCustomProvider(CustomLLM):
             bridge.unregister_receiver(cmd_id)
             raise Exception(f"Failed to send command: {e}")
 
-        async for raw_line in tool_handler.event_generator(cmd_id, queue, model):
+        # Clean provider prefix if added by LiteLLM wildcard routing
+        clean_model = model.replace("gemini-ollama/", "", 1)
+
+        async for raw_line in tool_handler.event_generator(cmd_id, queue, clean_model):
             if not raw_line.startswith("data: "):
                 continue
             data_str = raw_line[len("data: "):].strip()
@@ -125,9 +131,9 @@ if __name__ == "__main__":
     config_data = {
         "model_list": [
             {
-                "model_name": "gemini-3.5-flash",
+                "model_name": "*",
                 "litellm_params": {
-                    "model": "gemini-ollama/gemini-3.5-flash"
+                    "model": "gemini-ollama/*"
                 }
             }
         ]

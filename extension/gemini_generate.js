@@ -98,6 +98,23 @@ function handleDevToolsNetworkRequest(body) {
   }
 }
 
+// Callback invoked when the main world script posts a stream chunk message
+function handleGeminiStreamChunk(body) {
+  console.log('[gemini-proxy-extension] handleGeminiStreamChunk called: ' + JSON.stringify({
+    hasActiveRequest: !!activeGenerateRequest,
+    bodyLength: body?.length ?? 0,
+  }));
+
+  if (!activeGenerateRequest) {
+    return;
+  }
+  
+  const text = extractTextFromResponse(body);
+  if (text) {
+    activeGenerateRequest.onChunk(text);
+  }
+}
+
 async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResult }) {
   let tabId = null;
   let isReusedTab = false;
@@ -190,9 +207,17 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       rejectResponsePromise = reject;
     });
 
+    let sentLength = 0;
+
     activeGenerateRequest = {
       tabId: tabId,
-      onChunk: onChunk,
+      onChunk: (text) => {
+        const delta = text.slice(sentLength);
+        if (delta) {
+          onChunk(delta);
+          sentLength = text.length;
+        }
+      },
       onResult: onResult,
       resolve: resolveResponsePromise,
       reject: rejectResponsePromise,
@@ -224,7 +249,8 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       entry.lastUsedAt = Date.now();
     }
 
-    onResult({ text: responseText });
+    const finalDelta = responseText.slice(sentLength);
+    onResult({ text: finalDelta });
 
   } catch (error) {
     if (tabId !== null) {
@@ -252,3 +278,4 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
 
 window.runGeminiGenerate = runGeminiGenerate;
 window.handleDevToolsNetworkRequest = handleDevToolsNetworkRequest;
+window.handleGeminiStreamChunk = handleGeminiStreamChunk;

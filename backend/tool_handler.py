@@ -282,6 +282,7 @@ async def event_generator(cmd_id: int, queue: asyncio.Queue, model: str):
             if text:
                 accumulator += text
                 
+            already_yielded = False
             if is_tool_call is None:
                 stripped = accumulator.lstrip()
                 if len(stripped) >= 15:
@@ -300,13 +301,26 @@ async def event_generator(cmd_id: int, queue: asyncio.Queue, model: str):
                         )
                         yield f"data: {json.dumps(chunk)}\n\n"
                         first = False
+                        already_yielded = True
                 elif done:
                     if stripped.startswith("```json-tool-call") or stripped.startswith("{"):
                         is_tool_call = True
                     else:
                         is_tool_call = False
+                        chunk = build_stream_chunk(
+                            id=chunk_id,
+                            created=created_time,
+                            model=model,
+                            content=accumulator,
+                            tool_calls=None,
+                            include_role=first,
+                            done=True
+                        )
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        first = False
+                        already_yielded = True
             
-            if is_tool_call is False:
+            if is_tool_call is False and not already_yielded:
                 if text or done:
                     chunk = build_stream_chunk(
                         id=chunk_id,

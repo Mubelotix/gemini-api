@@ -35,7 +35,7 @@ Test the OpenAI-compatible endpoint from your terminal:
 curl -X POST http://localhost:1111/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-1.5-pro",
+    "model": "gemini",
     "messages": [
       {"role": "user", "content": "Say hello!"}
     ]
@@ -48,7 +48,7 @@ curl -X POST http://localhost:1111/v1/chat/completions \
   "id": "chatcmpl-1",
   "object": "chat.completion",
   "created": 1780353737,
-  "model": "gemini-1.5-pro",
+  "model": "gemini",
   "choices": [
     {
       "index": 0,

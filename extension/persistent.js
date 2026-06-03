@@ -118,12 +118,19 @@ function handleBackendMessage(rawData) {
   }
 }
 
-// Receive captured network request responses from DevTools context
+// Receive captured network request responses or stream chunks
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message && message.type === 'devtools-network-request') {
-    console.log('[gemini-proxy-extension] received devtools network request response');
-    if (typeof window.handleDevToolsNetworkRequest === 'function') {
-      window.handleDevToolsNetworkRequest(message.body);
+  if (message) {
+    if (message.type === 'devtools-network-request') {
+      console.log('[gemini-proxy-extension] received devtools network request response');
+      if (typeof window.handleDevToolsNetworkRequest === 'function') {
+        window.handleDevToolsNetworkRequest(message.body);
+      }
+    } else if (message.type === 'gemini-stream-chunk') {
+      console.log('[gemini-proxy-extension] received gemini stream chunk');
+      if (typeof window.handleGeminiStreamChunk === 'function') {
+        window.handleGeminiStreamChunk(message.body);
+      }
     }
   }
 });
