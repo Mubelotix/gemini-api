@@ -37,11 +37,19 @@
     
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        window.postMessage({
+          type: "gemini-stream-chunk",
+          body: accumulated,
+          done: true
+        }, "*");
+        break;
+      }
       accumulated += decoder.decode(value, { stream: true });
       window.postMessage({
         type: "gemini-stream-chunk",
-        body: accumulated
+        body: accumulated,
+        done: false
       }, "*");
     }
   }
@@ -63,10 +71,22 @@
           try {
             window.postMessage({
               type: "gemini-stream-chunk",
-              body: this.responseText
+              body: this.responseText,
+              done: false
             }, "*");
           } catch (e) {
             console.error("[gemini-proxy-inject] XHR progress handler error:", e);
+          }
+        });
+        this.addEventListener("load", () => {
+          try {
+            window.postMessage({
+              type: "gemini-stream-chunk",
+              body: this.responseText,
+              done: true
+            }, "*");
+          } catch (e) {
+            console.error("[gemini-proxy-inject] XHR load handler error:", e);
           }
         });
       }

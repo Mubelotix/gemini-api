@@ -127,9 +127,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         window.handleDevToolsNetworkRequest(message.body);
       }
     } else if (message.type === 'gemini-stream-chunk') {
-      console.log('[gemini-proxy-extension] received gemini stream chunk');
+      console.log('[gemini-proxy-extension] received gemini stream chunk', { done: message.done });
       if (typeof window.handleGeminiStreamChunk === 'function') {
-        window.handleGeminiStreamChunk(message.body);
+        window.handleGeminiStreamChunk(message.body, message.done);
       }
     }
   }

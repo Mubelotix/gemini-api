@@ -242,6 +242,8 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
     const responseText = await responsePromise;
     console.log('[gemini-proxy-extension] gemini generate response (from devtools)', responseText);
 
+    const finalDelta = responseText.slice(sentLength);
+
     const entry = geminiTabRegistry.get(tabId);
     if (entry) {
       entry.generating = false;
@@ -249,7 +251,6 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       entry.lastUsedAt = Date.now();
     }
 
-    const finalDelta = responseText.slice(sentLength);
     onResult({ text: finalDelta });
 
   } catch (error) {

@@ -231,7 +231,8 @@ window.addEventListener("message", (event) => {
 	if (message && message.type === "gemini-stream-chunk") {
 		chrome.runtime.sendMessage({
 			type: "gemini-stream-chunk",
-			body: message.body
+			body: message.body,
+			done: message.done
 		}).catch(() => {});
 	}
 });
