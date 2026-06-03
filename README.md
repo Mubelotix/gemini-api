@@ -6,6 +6,9 @@ This project serves as an alternative to [Nativu5/Gemini-FastAPI](https://github
 
 By running Chrome and a local FastAPI backend inside a single container, this proxy automatically bridges your API calls directly to Gemini's web client. It's the ultimate way to get premium access!
 
+> [!NOTE]
+> Please avoid sharing or publicizing this repository. To ensure continued access for everyone, we need to keep this project low-profile. If traffic spikes, it will be turned private.
+
 ---
 
 ## ⚡ Quick Start
