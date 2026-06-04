@@ -24,7 +24,7 @@ jobs:
           pip install -r backend/requirements.txt mypy
 
       - name: Compile python files
-        run: python -m py_compile backend/service.py backend/bridge.py backend/openai_api.py backend/tool_handler.py
+        run: python -m py_compile backend/service.py backend/bridge.py backend/tool_handler.py
 
       - name: Run mypy type checking
         run: mypy --check-untyped-defs backend
