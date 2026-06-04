@@ -228,9 +228,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 window.addEventListener("message", (event) => {
 	if (event.source !== window) return;
 	const message = event.data;
-	if (message && message.type === "gemini-stream-chunk") {
+	if (message && message.type === "gemini-response-finished") {
 		chrome.runtime.sendMessage({
-			type: "gemini-stream-chunk",
+			type: "gemini-response-finished",
 			body: message.body
 		}).catch(() => {});
 	}

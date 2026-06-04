@@ -4,7 +4,6 @@
   "version": "1.0.0",
   "description": "Gemini Proxy browser extension.",
   "permissions": ["tabs"],
-  "devtools_page": "devtools.html",
   "background": {
     "service_worker": "background.js"
   },

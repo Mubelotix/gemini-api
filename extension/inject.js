@@ -16,8 +16,13 @@
         console.log("[gemini-proxy-inject] Intercepted StreamGenerate fetch");
         try {
           const cloned = response.clone();
-          readFetchStream(cloned).catch(err => {
-            console.error("[gemini-proxy-inject] Error reading fetch stream:", err);
+          cloned.text().then(text => {
+            window.postMessage({
+              type: "gemini-response-finished",
+              body: text
+            }, "*");
+          }).catch(err => {
+            console.error("[gemini-proxy-inject] Error reading clone text:", err);
           });
         } catch (e) {
           console.error("[gemini-proxy-inject] Error cloning response:", e);
@@ -28,23 +33,6 @@
       throw error;
     }
   };
-
-  async function readFetchStream(response) {
-    if (!response.body) return;
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let accumulated = "";
-    
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      accumulated += decoder.decode(value, { stream: true });
-      window.postMessage({
-        type: "gemini-stream-chunk",
-        body: accumulated
-      }, "*");
-    }
-  }
 
   // Hook XMLHttpRequest
   const originalOpen = XMLHttpRequest.prototype.open;
@@ -59,14 +47,14 @@
     try {
       if (this._url && this._url.includes("assistant.lamda.BardFrontendService/StreamGenerate")) {
         console.log("[gemini-proxy-inject] Intercepted StreamGenerate XHR");
-        this.addEventListener("progress", () => {
+        this.addEventListener("load", () => {
           try {
             window.postMessage({
-              type: "gemini-stream-chunk",
+              type: "gemini-response-finished",
               body: this.responseText
             }, "*");
           } catch (e) {
-            console.error("[gemini-proxy-inject] XHR progress handler error:", e);
+            console.error("[gemini-proxy-inject] XHR load handler error:", e);
           }
         });
       }

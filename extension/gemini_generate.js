@@ -19,6 +19,7 @@ function extractTextFromResponse(body) {
   const regex = /\["wrb\.fr",\s*null,\s*"((?:[^"\\]|\\.)*)"\]/g;
   let match;
   let latestText = "";
+  let latestThinking = "";
   let matchCount = 0;
   let parseFailureCount = 0;
   
@@ -40,6 +41,22 @@ function extractTextFromResponse(body) {
               latestText = text;
             }
           }
+          
+          // Extract thinking text from parts[0][37]
+          if (parts[0].length > 37 && Array.isArray(parts[0][37])) {
+            const thinkingSteps = parts[0][37];
+            const steps = [];
+            for (let i = 0; i < thinkingSteps.length; i += 2) {
+              const step = thinkingSteps[i];
+              if (Array.isArray(step) && typeof step[0] === 'string' && step[0]) {
+                steps.push(step[0]);
+              }
+            }
+            const thinkingText = steps.join("");
+            if (thinkingText.length > latestThinking.length) {
+              latestThinking = thinkingText;
+            }
+          }
         }
       }
       
@@ -54,6 +71,22 @@ function extractTextFromResponse(body) {
               latestText = text;
             }
           }
+          
+          // Extract thinking text from choices[0][37]
+          if (choices[0].length > 37 && Array.isArray(choices[0][37])) {
+            const thinkingSteps = choices[0][37];
+            const steps = [];
+            for (let i = 0; i < thinkingSteps.length; i += 2) {
+              const step = thinkingSteps[i];
+              if (Array.isArray(step) && typeof step[0] === 'string' && step[0]) {
+                steps.push(step[0]);
+              }
+            }
+            const thinkingText = steps.join("");
+            if (thinkingText.length > latestThinking.length) {
+              latestThinking = thinkingText;
+            }
+          }
         }
       }
     } catch (e) {
@@ -65,17 +98,22 @@ function extractTextFromResponse(body) {
     matchCount,
     parseFailureCount,
     extractedLength: latestText.length,
-    extractedPrefix: latestText.slice(0, 100),
+    extractedThinkingLength: latestThinking.length,
   }));
-  return latestText;
+  
+  let responseText = "";
+  if (latestThinking) {
+    responseText += `<think>\n${latestThinking}\n</think>\n\n`;
+  }
+  responseText += latestText;
+  return responseText;
 }
 
-// Callback invoked when the DevTools script intercepts StreamGenerate content
-function handleDevToolsNetworkRequest(body) {
-  console.log('[gemini-proxy-extension] handleDevToolsNetworkRequest called: ' + JSON.stringify({
+// Callback invoked when the main world script posts the finished response body
+function handleGeminiResponseFinished(body) {
+  console.log('[gemini-proxy-extension] handleGeminiResponseFinished called: ' + JSON.stringify({
     hasActiveRequest: !!activeGenerateRequest,
     bodyLength: body?.length ?? 0,
-    bodySample: typeof body === 'string' ? body.slice(0, 200) : null,
   }));
 
   if (!activeGenerateRequest) {
@@ -95,23 +133,6 @@ function handleDevToolsNetworkRequest(body) {
     }
     activeGenerateRequest.reject(new Error("Failed to extract text from StreamGenerate response"));
     activeGenerateRequest = null;
-  }
-}
-
-// Callback invoked when the main world script posts a stream chunk message
-function handleGeminiStreamChunk(body) {
-  console.log('[gemini-proxy-extension] handleGeminiStreamChunk called: ' + JSON.stringify({
-    hasActiveRequest: !!activeGenerateRequest,
-    bodyLength: body?.length ?? 0,
-  }));
-
-  if (!activeGenerateRequest) {
-    return;
-  }
-  
-  const text = extractTextFromResponse(body);
-  if (text) {
-    activeGenerateRequest.onChunk(text);
   }
 }
 
@@ -223,7 +244,7 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       reject: rejectResponsePromise,
       timeout: setTimeout(() => {
         if (activeGenerateRequest) {
-          activeGenerateRequest.reject(new Error("Timeout waiting for response from DevTools network capture"));
+          activeGenerateRequest.reject(new Error("Timeout waiting for response from network capture"));
           activeGenerateRequest = null;
         }
       }, GEMINI_RESPONSE_TIMEOUT_MS)
@@ -238,9 +259,9 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
 
     onStatus({ state: 'gemini-generate-sent' });
 
-    // Await the promise resolved when DevTools intercepts the network request
+    // Await the promise resolved when the network request completes
     const responseText = await responsePromise;
-    console.log('[gemini-proxy-extension] gemini generate response (from devtools)', responseText);
+    console.log('[gemini-proxy-extension] gemini generate response (from network capture)', responseText);
 
     const entry = geminiTabRegistry.get(tabId);
     if (entry) {
@@ -277,5 +298,4 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
 }
 
 window.runGeminiGenerate = runGeminiGenerate;
-window.handleDevToolsNetworkRequest = handleDevToolsNetworkRequest;
-window.handleGeminiStreamChunk = handleGeminiStreamChunk;
+window.handleGeminiResponseFinished = handleGeminiResponseFinished;
