@@ -142,6 +142,13 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
 
   pruneExpiredTabs();
   const requestHashes = computePromptHashes(prompt);
+
+  // Snapshot tracked tab hashes before any modifications
+  const tabHashSnapshot = [];
+  for (const [, info] of geminiTabRegistry) {
+    tabHashSnapshot.push(info.messageHashes.slice());
+  }
+
   const reuse = findReusableTab(requestHashes);
 
   console.log('[gemini-proxy-extension] gemini-generate request hashes', {
@@ -295,7 +302,14 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
     }
 
     const finalDelta = responseText.slice(sentLength);
-    onResult({ text: finalDelta });
+    onResult({
+      text: finalDelta,
+      cache: {
+        reused: isReusedTab,
+        request_hashes: requestHashes,
+        tab_hashes: tabHashSnapshot,
+      },
+    });
 
   } catch (error) {
     if (tabId !== null) {
@@ -309,7 +323,7 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       activeGenerateRequest = null;
     }
     onStatus({ state: 'gemini-generate-error', error: String(error) });
-    onResult({ text: '', error: String(error) });
+    onResult({ text: '', error: String(error), cache: { reused: isReusedTab, request_hashes: requestHashes, tab_hashes: tabHashSnapshot } });
   } finally {
     if (!isReusedTab && tabId !== null) {
       const entry = geminiTabRegistry.get(tabId);

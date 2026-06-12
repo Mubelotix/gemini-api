@@ -83,7 +83,7 @@ class GeminiOllamaCustomProvider(CustomLLM):
             finish_reason = choice.get("finish_reason")
             is_finished = finish_reason is not None
 
-            yield GenericStreamingChunk(
+            chunk = GenericStreamingChunk(
                 text=delta.get("content") or "",
                 is_finished=is_finished,
                 finish_reason=finish_reason,
@@ -91,6 +91,10 @@ class GeminiOllamaCustomProvider(CustomLLM):
                 tool_use=delta.get("tool_calls"),
                 usage={"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
             )
+            cache = chunk_data.get("gemini_cache")
+            if cache is not None:
+                chunk["provider_specific_fields"] = {"gemini_cache": cache}
+            yield chunk
 
 # 1. Register custom provider in LiteLLM's internal registry
 provider_name = "gemini-ollama"

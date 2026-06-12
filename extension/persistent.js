@@ -100,7 +100,7 @@ function handleBackendMessage(rawData) {
             }));
           }
         },
-        onResult: ({ text, error }) => {
+        onResult: ({ text, error, cache }) => {
           if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send(JSON.stringify({
               id: requestId,
@@ -108,6 +108,7 @@ function handleBackendMessage(rawData) {
               text: text,
               error: error ?? null,
               done: true,
+              cache: cache ?? null,
             }));
           }
         },

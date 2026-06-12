@@ -160,6 +160,7 @@ async def get_non_stream_response(cmd_id: int, queue: asyncio.Queue, model: str)
     created_time = int(time.time())
     chunk_id = f"chatcmpl-{cmd_id}"
     accumulated_text = []
+    cache: Optional[dict] = None
     
     try:
         while True:
@@ -177,6 +178,7 @@ async def get_non_stream_response(cmd_id: int, queue: asyncio.Queue, model: str)
                 accumulated_text.append(text)
                 
             if item.get("done", False):
+                cache = item.get("cache")
                 break
     finally:
         bridge.unregister_receiver(cmd_id)
@@ -200,16 +202,11 @@ async def get_non_stream_response(cmd_id: int, queue: asyncio.Queue, model: str)
         }
         finish_reason = "stop"
         
-    return {
+    response = {
         "id": chunk_id,
         "object": "chat.completion",
         "created": created_time,
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": choice_message,
-            "finish_reason": finish_reason
-        }],
         "choices": [{
             "index": 0,
             "message": choice_message,
@@ -232,6 +229,9 @@ async def get_non_stream_response(cmd_id: int, queue: asyncio.Queue, model: str)
         },
         "service_tier": "default"
     }
+    if cache is not None:
+        response["gemini_cache"] = cache
+    return response
 
 def build_stream_chunk(id: str, created: int, model: str, content: Optional[str], tool_calls: Optional[list], include_role: bool, done: bool) -> dict:
     delta: Dict[str, Any] = {}
@@ -262,6 +262,7 @@ async def event_generator(cmd_id: int, queue: asyncio.Queue, model: str):
     
     accumulator = ""
     is_tool_call = None  # None: undecided, True: tool call, False: normal text
+    cache: Optional[dict] = None
     
     try:
         while True:
@@ -278,6 +279,9 @@ async def event_generator(cmd_id: int, queue: asyncio.Queue, model: str):
                 
             text = item.get("text", "")
             done = item.get("done", False)
+            
+            if done:
+                cache = item.get("cache")
             
             if text:
                 accumulator += text
@@ -316,6 +320,8 @@ async def event_generator(cmd_id: int, queue: asyncio.Queue, model: str):
                             include_role=first,
                             done=True
                         )
+                        if cache is not None:
+                            chunk["gemini_cache"] = cache
                         yield f"data: {json.dumps(chunk)}\n\n"
                         first = False
                         already_yielded = True
@@ -331,6 +337,8 @@ async def event_generator(cmd_id: int, queue: asyncio.Queue, model: str):
                         include_role=first,
                         done=done
                     )
+                    if done and cache is not None:
+                        chunk["gemini_cache"] = cache
                     yield f"data: {json.dumps(chunk)}\n\n"
                     first = False
                     
@@ -347,6 +355,8 @@ async def event_generator(cmd_id: int, queue: asyncio.Queue, model: str):
                             include_role=first,
                             done=True
                         )
+                        if cache is not None:
+                            chunk["gemini_cache"] = cache
                         yield f"data: {json.dumps(chunk)}\n\n"
                     else:
                         chunk = build_stream_chunk(
@@ -358,6 +368,8 @@ async def event_generator(cmd_id: int, queue: asyncio.Queue, model: str):
                             include_role=first,
                             done=True
                         )
+                        if cache is not None:
+                            chunk["gemini_cache"] = cache
                         yield f"data: {json.dumps(chunk)}\n\n"
                 break
     finally:
