@@ -118,6 +118,37 @@ function handleBackendMessage(rawData) {
   }
 }
 
+function logToBackend(message) {
+  if (websocket && websocket.readyState === WebSocket.OPEN) {
+    websocket.send(JSON.stringify({
+      type: 'log',
+      message: message
+    }));
+  }
+}
+
+const originalConsoleLog = console.log;
+const originalConsoleWarn = console.warn;
+const originalConsoleError = console.error;
+
+console.log = function(...args) {
+  originalConsoleLog.apply(console, args);
+  const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+  logToBackend(msg);
+};
+
+console.warn = function(...args) {
+  originalConsoleWarn.apply(console, args);
+  const msg = '[WARN] ' + args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+  logToBackend(msg);
+};
+
+console.error = function(...args) {
+  originalConsoleError.apply(console, args);
+  const msg = '[ERROR] ' + args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+  logToBackend(msg);
+};
+
 // Receive captured response body when network request completes
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === 'gemini-response-finished') {
@@ -125,6 +156,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (typeof window.handleGeminiResponseFinished === 'function') {
       window.handleGeminiResponseFinished(message.body);
     }
+  }
+  if (message && message.type === 'gemini-log') {
+    logToBackend(message.message);
   }
 });
 

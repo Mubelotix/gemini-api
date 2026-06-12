@@ -1,4 +1,11 @@
-console.log('[gemini-proxy-extension] content script injected on', window.location.href);
+function logToBackend(msg) {
+	chrome.runtime.sendMessage({
+		type: 'gemini-log',
+		message: msg,
+	}).catch(() => {});
+}
+
+logToBackend('[gemini-proxy-extension] content script injected on ' + window.location.href);
 
 function getGeminiEditor() {
 	const inputArea = document.querySelector('input-area-v2');
@@ -140,26 +147,43 @@ function pasteFilesIntoGemini(files) {
 }
 
 function findSendButton() {
+	const inputArea = document.querySelector('input-area-v2') || document.querySelector('input-area');
+	if (inputArea) {
+		const buttons = Array.from(inputArea.querySelectorAll('button'));
+		logToBackend('[gemini-proxy-extension] findSendButton: buttons in input area: ' + buttons.length);
+		buttons.forEach((b, i) => {
+			logToBackend(`[gemini-proxy-extension] button ${i}: label="${b.getAttribute('aria-label')}", disabled=${b.disabled}, aria-disabled="${b.getAttribute('aria-disabled')}", class="${b.className}"`);
+		});
+	}
+
+	const isStopLabel = (label) => {
+		if (!label) return false;
+		const l = label.toLowerCase();
+		return l.includes('stop') || l.includes('arrêt') || l.includes('parar') || l.includes('cancel') || l.includes('abbrech');
+	};
+
 	// Try standard English
 	let btn = document.querySelector('button[aria-label="Send message"]');
-	if (btn) return btn;
+	if (btn && !isStopLabel(btn.getAttribute('aria-label'))) return btn;
 
 	// Try common translations
 	btn = document.querySelector('button[aria-label*="Send"], button[aria-label*="send"], button[aria-label*="Envoyer"], button[aria-label*="envoyer"], button[aria-label*="Enviar"], button[aria-label*="enviar"], button[aria-label*="Senden"], button[aria-label*="senden"]');
-	if (btn) return btn;
+	if (btn && !isStopLabel(btn.getAttribute('aria-label'))) return btn;
 
 	// Fallback to input area buttons
-	const inputArea = document.querySelector('input-area-v2') || document.querySelector('input-area');
 	if (inputArea) {
 		const buttons = Array.from(inputArea.querySelectorAll('button'));
 		for (const b of buttons) {
 			const label = (b.getAttribute('aria-label') || '').toLowerCase();
-			if (label.includes('send') || label.includes('envoyer') || label.includes('enviar') || label.includes('senden') || label.includes('submit')) {
+			if ((label.includes('send') || label.includes('envoyer') || label.includes('enviar') || label.includes('senden') || label.includes('submit')) && !isStopLabel(label)) {
 				return b;
 			}
 		}
 		if (buttons.length > 0) {
-			return buttons[buttons.length - 1];
+			const fallbackBtn = buttons[buttons.length - 1];
+			if (!isStopLabel(fallbackBtn.getAttribute('aria-label'))) {
+				return fallbackBtn;
+			}
 		}
 	}
 	return null;
@@ -168,6 +192,55 @@ function findSendButton() {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	if (!message) {
 		return;
+	}
+
+	if (message.type === 'gemini-ensure-send-ready') {
+		try {
+			const inputArea = document.querySelector('input-area-v2') || document.querySelector('input-area');
+			if (!inputArea) {
+				sendResponse({ success: false, error: 'Could not find input area' });
+				return true;
+			}
+			const buttons = Array.from(inputArea.querySelectorAll('button'));
+			if (buttons.length === 0) {
+				sendResponse({ success: false, error: 'No buttons found in input area' });
+				return true;
+			}
+			const button = buttons[buttons.length - 1];
+			const label = button.getAttribute('aria-label') || '';
+			const isStop = label.toLowerCase().includes('stop') || label.toLowerCase().includes('arrêt') || label.toLowerCase().includes('parar') || label.toLowerCase().includes('cancel') || label.toLowerCase().includes('abbrech');
+			
+			if (isStop) {
+				logToBackend('[gemini-proxy-extension] gemini-ensure-send-ready: detected stuck Stop button: ' + label + '. Force-enabling and clicking to reset.');
+				button.disabled = false;
+				button.removeAttribute('disabled');
+				button.setAttribute('aria-disabled', 'false');
+				button.click();
+				
+				let checks = 0;
+				const interval = setInterval(() => {
+					checks++;
+					const currentLabel = button.getAttribute('aria-label') || '';
+					const nowStop = currentLabel.toLowerCase().includes('stop') || currentLabel.toLowerCase().includes('arrêt') || currentLabel.toLowerCase().includes('parar') || currentLabel.toLowerCase().includes('cancel') || currentLabel.toLowerCase().includes('abbrech');
+					if (!nowStop) {
+						clearInterval(interval);
+						logToBackend('[gemini-proxy-extension] gemini-ensure-send-ready: button reset to Send successfully after ' + (checks * 100) + 'ms');
+						sendResponse({ success: true, reset: true });
+					} else if (checks >= 30) {
+						clearInterval(interval);
+						logToBackend('[gemini-proxy-extension] gemini-ensure-send-ready: button still stuck on Stop after 3s');
+						sendResponse({ success: false, error: 'Button still stuck on Stop' });
+					}
+				}, 100);
+				return true;
+			} else {
+				sendResponse({ success: true, reset: false });
+				return true;
+			}
+		} catch (e) {
+			sendResponse({ success: false, error: String(e) });
+		}
+		return true;
 	}
 
 	if (message.type === 'gemini-inject-prompt') {
@@ -208,6 +281,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 				sendResponse({ success: false, error: 'Could not find the Send button' });
 				return true;
 			}
+			if (button.disabled || button.getAttribute('aria-disabled') === 'true') {
+				logToBackend('[gemini-proxy-extension] gemini-click-send: button is disabled/aria-disabled. Force-enabling before clicking.');
+				button.disabled = false;
+				button.removeAttribute('disabled');
+				button.setAttribute('aria-disabled', 'false');
+			}
 			button.click();
 			sendResponse({ success: true });
 		} catch (e) {
@@ -219,7 +298,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	if (message.type === 'gemini-can-send') {
 		const button = findSendButton();
 		sendResponse({
-			canSend: Boolean(button) && button.getAttribute('aria-disabled') !== 'true',
+			canSend: Boolean(button),
 		});
 		return true;
 	}

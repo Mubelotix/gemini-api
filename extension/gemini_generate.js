@@ -179,6 +179,12 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       await new Promise((r) => window.setTimeout(r, 3000));
     }
 
+    // Ensure the tab's Send button is ready and not stuck on Stop response.
+    const readyResult = await sendTabMessage(tabId, { type: 'gemini-ensure-send-ready' }).catch(err => ({ success: false, error: err.message }));
+    if (!readyResult?.success) {
+      console.warn('[gemini-proxy-extension] Tab send button stuck on Stop response, attempted to reset but it did not transition. Proceeding anyway.', readyResult?.error);
+    }
+
     const injectResult = await sendTabMessage(tabId, {
       type: 'gemini-inject-prompt',
       prompt: effectivePrompt,

@@ -120,6 +120,9 @@ class ExtensionBridge:
         self.receivers.pop(cmd_id, None)
 
     async def handle_client_message(self, data: dict):
+        if data.get("type") == "log":
+            print(f"[extension] {data.get('message')}", flush=True)
+            return
         cmd_id = data.get("id")
         if cmd_id is not None and cmd_id in self.receivers:
             await self.receivers[cmd_id].put(data)
