@@ -185,6 +185,15 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
       console.warn('[gemini-proxy-extension] Tab send button stuck on Stop response, attempted to reset but it did not transition. Proceeding anyway.', readyResult?.error);
     }
 
+    // If effectivePrompt is a JSON array string containing a single user message,
+    // extract its content to inject it raw instead of as a JSON string.
+    const parsedEffective = parsePromptJsonArray(effectivePrompt);
+    if (parsedEffective && parsedEffective.messages.length === 1 && parsedEffective.messages[0].role === 'user') {
+      const userMsg = parsedEffective.messages[0];
+      effectivePrompt = parsedEffective.extra ? userMsg.content + '\n\n' + parsedEffective.extra : userMsg.content;
+      console.log('[gemini-proxy-extension] extracted single user message content for raw injection');
+    }
+
     const injectResult = await sendTabMessage(tabId, {
       type: 'gemini-inject-prompt',
       prompt: effectivePrompt,
