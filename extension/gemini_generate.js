@@ -272,7 +272,16 @@ async function runGeminiGenerate({ prompt, files = [], onStatus, onChunk, onResu
     const entry = geminiTabRegistry.get(tabId);
     if (entry) {
       entry.generating = false;
-      entry.messageHashes = requestHashes;
+      
+      // Append the generated assistant response to the message hashes
+      // so that it matches in the next turn's prefix matching
+      const assistantMessage = {
+        role: 'assistant',
+        content: responseText
+      };
+      const assistantHash = hashString(JSON.stringify(assistantMessage));
+      entry.messageHashes = [...requestHashes, assistantHash];
+      
       entry.lastUsedAt = Date.now();
     }
 
